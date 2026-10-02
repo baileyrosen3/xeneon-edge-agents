@@ -311,7 +311,7 @@ impl MonitorController {
         Ok("Monitor capabilities refreshed from exact XENEON EDGE".into())
     }
     async fn failed_snapshot(&self, reason: &str) -> MonitorSnapshot {
-        MonitorSnapshot {
+        let mut snapshot = MonitorSnapshot {
             refreshed_at_ms: now(),
             reason: Some(bounded(reason)),
             controls: CONTROLS
@@ -319,7 +319,29 @@ impl MonitorController {
                 .map(|id| MonitorControl::unavailable(*id, &bounded(reason)))
                 .collect(),
             ..MonitorSnapshot::default()
+        };
+        if let Ok((target, commissioning)) = self.discover() {
+            snapshot.identity_verified = true;
+            snapshot.connector = Some(target.connector.clone());
+            snapshot.serial = Some(target.serial.clone());
+            snapshot.model = Some(target.model.clone());
+            snapshot.edid_sha256 = Some(target.hash.clone());
+            snapshot.i2c_bus = Some(target.bus);
+            if self.paths.layout {
+                self.layout(&target, &commissioning, &mut snapshot).await;
+            }
+            if self.same_identity(&target).is_err() {
+                snapshot.identity_verified = false;
+                snapshot.connector = None;
+                snapshot.serial = None;
+                snapshot.model = None;
+                snapshot.edid_sha256 = None;
+                snapshot.i2c_bus = None;
+                snapshot.display = None;
+                snapshot.touch = None;
+            }
         }
+        snapshot
     }
     fn commissioned(&self) -> Result<Commissioning> {
         if !self.config.enabled {
@@ -435,14 +457,28 @@ impl MonitorController {
         fs::OpenOptions::new().read(true).write(true).open(self.paths.dev.join(format!("i2c-{}",target.bus))).context("Exact EDGE I2C device is inaccessible to this process; hardware support is not determined")?;
         Ok(())
     }
-    fn same_target(&self, target: &Target) -> Result<()> {
+    fn same_identity(&self, target: &Target) -> Result<()> {
         let (fresh, _) = self.discover()?;
         if &fresh != target {
             bail!("Monitor identity or I2C route changed; operation was not retried");
         }
-        self.device_access(&fresh)
+        Ok(())
+    }
+    fn same_target(&self, target: &Target) -> Result<()> {
+        self.same_identity(target)?;
+        self.device_access(target)
     }
     async fn ddc(&self, target: &Target, args: &[String], deadline: Duration) -> Result<String> {
+        self.ddc_with_mode(target, args, deadline, OutputMode::Strict)
+            .await
+    }
+    async fn ddc_with_mode(
+        &self,
+        target: &Target,
+        args: &[String],
+        deadline: Duration,
+        mode: OutputMode,
+    ) -> Result<String> {
         let mut fixed = vec![
             "--noconfig".into(),
             "--disable-udf".into(),
@@ -453,7 +489,7 @@ impl MonitorController {
             "--terse".into(),
         ];
         fixed.extend_from_slice(args);
-        run(&self.paths.ddcutil, &fixed, deadline).await
+        run_with_mode(&self.paths.ddcutil, &fixed, deadline, mode).await
     }
     async fn refresh_locked(&self) -> Result<MonitorSnapshot> {
         let (target, c) = self.discover()?;
@@ -467,42 +503,65 @@ impl MonitorController {
             refreshed_at_ms: now(),
             ..MonitorSnapshot::default()
         };
-        if let Err(error) = self.device_access(&target) {
-            next.reason = Some(bounded(&error.to_string()));
-            for control in &mut next.controls {
-                control.reason = next.reason.clone();
-            }
-            return Ok(next);
+        let readings: Result<(String, Vec<MonitorChoice>)> = async {
+            self.device_access(&target)?;
+            let cap = self
+                .ddc(&target, &["capabilities".into()], Duration::from_secs(7))
+                .await
+                .ok();
+            self.same_target(&target)?;
+            let mut args = vec!["getvcp".into()];
+            args.extend(CONTROLS.iter().map(|id| format!("{:02X}", id.code())));
+            // Installed ddcutil 2.2.7 exits one for a mixed getvcp batch
+            // containing ERR. Only this exact bounded read-only projection
+            // accepts that status after validating every expected record.
+            let text = self
+                .ddc_with_mode(
+                    &target,
+                    &args,
+                    Duration::from_secs(11),
+                    OutputMode::VcpBatch,
+                )
+                .await?;
+            self.same_target(&target)?;
+            Ok((text, cap.as_deref().map(preset_choices).unwrap_or_default()))
         }
-        let cap = self
-            .ddc(&target, &["capabilities".into()], Duration::from_secs(7))
-            .await
-            .ok();
-        self.same_target(&target)?;
-        let mut args = vec!["getvcp".into()];
-        args.extend(CONTROLS.iter().map(|id| format!("{:02X}", id.code())));
-        // getvcp can exit zero despite an ERR row; each feature is checked.
-        let text = self.ddc(&target, &args, Duration::from_secs(11)).await?;
-        self.same_target(&target)?;
-        let choices = cap.as_deref().map(preset_choices).unwrap_or_default();
-        next.controls = CONTROLS
-            .iter()
-            .map(|id| control_from_reply(*id, &text, &choices, self.config.writes_enabled))
-            .collect();
-        apply_rgb_gate(&mut next.controls, self.config.writes_enabled);
-        next.available = next.controls.iter().any(|v| v.supported);
-        next.reason = if next.available {
-            if self.config.writes_enabled {
-                None
-            } else {
-                Some("Monitor controls are read-only; monitor.writes_enabled is false".into())
+        .await;
+        match readings {
+            Ok((text, choices)) => {
+                next.controls = CONTROLS
+                    .iter()
+                    .map(|id| control_from_reply(*id, &text, &choices, self.config.writes_enabled))
+                    .collect();
+                apply_rgb_gate(&mut next.controls, self.config.writes_enabled);
+                next.available = next.controls.iter().any(|v| v.supported);
+                next.reason = if next.available {
+                    if self.config.writes_enabled {
+                        None
+                    } else {
+                        Some(
+                            "Monitor controls are read-only; monitor.writes_enabled is false"
+                                .into(),
+                        )
+                    }
+                } else {
+                    Some("No supported monitor feature produced a valid DDC read".into())
+                };
             }
-        } else {
-            Some("No supported monitor feature produced a valid DDC read".into())
-        };
+            Err(error) => {
+                // Failure to query picture settings does not erase an
+                // independently reverified connected device identity.
+                self.same_identity(&target)?;
+                next.reason = Some(bounded(&error.to_string()));
+                for control in &mut next.controls {
+                    control.reason = next.reason.clone();
+                }
+            }
+        }
         if self.paths.layout {
             self.layout(&target, &c, &mut next).await;
         }
+        self.same_identity(&target)?;
         next.refreshed_at_ms = now();
         Ok(next)
     }
@@ -988,7 +1047,52 @@ fn now() -> u64 {
         .try_into()
         .unwrap_or(u64::MAX)
 }
+#[derive(Clone, Copy)]
+enum OutputMode {
+    Strict,
+    VcpBatch,
+}
+fn valid_mixed_vcp_batch(text: &str) -> bool {
+    if text.len() > MAX_OUTPUT as usize {
+        return false;
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut values = 0;
+    let mut errors = 0;
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        if fields.first() != Some(&"VCP") {
+            return false;
+        }
+        let Some(id) = fields
+            .get(1)
+            .and_then(|code| u8::from_str_radix(code, 16).ok())
+            .and_then(|code| CONTROLS.iter().find(|id| id.code() == code))
+        else {
+            return false;
+        };
+        if !seen.insert(id.code()) {
+            return false;
+        }
+        if fields.len() == 3 && fields[2] == "ERR" {
+            errors += 1;
+        } else if parse_reply(line, *id, true).is_ok() {
+            values += 1;
+        } else {
+            return false;
+        }
+    }
+    seen.len() == CONTROLS.len() && values > 0 && errors > 0
+}
 async fn run(program: &Path, args: &[String], deadline: Duration) -> Result<String> {
+    run_with_mode(program, args, deadline, OutputMode::Strict).await
+}
+async fn run_with_mode(
+    program: &Path,
+    args: &[String],
+    deadline: Duration,
+    mode: OutputMode,
+) -> Result<String> {
     let mut child = Command::new(program)
         .args(args)
         .env("LC_ALL", "C")
@@ -1005,13 +1109,30 @@ async fn run(program: &Path, args: &[String], deadline: Duration) -> Result<Stri
         let out = out?;
         let err = err?;
         let status = status?;
-        if !status.success() {
+        let text = String::from_utf8(out)?;
+        let mixed_read = matches!(mode, OutputMode::VcpBatch)
+            && status.code() == Some(1)
+            && err.iter().all(u8::is_ascii_whitespace)
+            && valid_mixed_vcp_batch(&text);
+        if !status.success() && !mixed_read {
             bail!(
-                "Monitor command failed: {}",
-                bounded(&String::from_utf8_lossy(&err))
+                "Monitor command failed ({status}): stderr={}; stdout={}",
+                bounded(
+                    if err.is_empty() {
+                        "<empty>".into()
+                    } else {
+                        String::from_utf8_lossy(&err)
+                    }
+                    .as_ref()
+                ),
+                bounded(if text.trim().is_empty() {
+                    "<empty>"
+                } else {
+                    &text
+                }),
             );
         }
-        Ok(String::from_utf8(out)?)
+        Ok(text)
     };
     match timeout(deadline, operation).await {
         Ok(result) => result,
@@ -1078,7 +1199,7 @@ mod tests {
                 &script,
                 format!(
                     r#"#!/usr/bin/python3
-import json,sys,time,pathlib
+import json,sys,time,pathlib,signal,os
 base=pathlib.Path({base})
 a=sys.argv[1:]
 with (base/'log').open('a') as f: f.write(json.dumps(a)+'\n')
@@ -1086,12 +1207,19 @@ s=json.loads((base/'state.json').read_text())
 if 'capabilities' in a:
  print('(prot(monitor)model(RTK)cmds(01 02 03)vcp(10 12 14(01 02 04 05 06 08 0B) 16 18 1A 87))')
 elif 'getvcp' in a:
- for c in a[a.index('getvcp')+1:]:
+ codes=a[a.index('getvcp')+1:]
+ if len(codes)>1 and s.get('batch_empty',False):sys.exit(s.get('batch_exit',1))
+ for c in codes:
   if c=='14': print('VCP 14 CNC x00 x0b x00 x%02x'%s['preset'])
   elif c=='10': print('VCP 10 C %d %d'%(s['brightness'],s['maximum']))
   elif c=='6B': print('VCP 6B ERR')
   elif c=='87': print('VCP 87 C 2 4')
   else: print('VCP %s C %d 255'%(c,s.get('gain',127)))
+ if len(codes)>1:
+  if s.get('batch_signal',False):sys.stdout.flush();os.kill(os.getpid(),signal.SIGTERM)
+  if s.get('batch_stderr',False):print('fatal transport failure',file=sys.stderr)
+  if s.get('batch_malformed',False):print('malformed response')
+  sys.exit(s.get('batch_exit',0))
 elif 'setvcp' in a:
  c,v=a[a.index('setvcp')+1:];time.sleep(s['delay'])
  if s['swap']:
@@ -1100,6 +1228,7 @@ elif 'setvcp' in a:
   if c=='10':s['brightness']=int(v)
   if c=='14':s['preset']=int(v);s['gain']=100
   (base/'state.json').write_text(json.dumps(s))
+ if s.get('set_exit',0):print('setvcp did not complete');sys.exit(s['set_exit'])
 else: sys.exit(1)
 "#,
                     base = serde_json::to_string(p.to_str().unwrap()).unwrap()
@@ -1281,6 +1410,90 @@ else: sys.exit(1)
         assert!(s.identity_verified && !s.available);
         assert!(s.reason.unwrap().contains("inaccessible"));
     }
+    #[tokio::test]
+    async fn mixed_get_exit_one_preserves_valid_controls_and_does_not_relax_writes() {
+        let f = Fixture::new(true);
+        f.change("batch_exit", json!(1));
+        f.controller.refresh().await.unwrap();
+        let s = f.controller.snapshot().await;
+        assert!(s.available && s.identity_verified);
+        assert_eq!(s.controls.iter().filter(|c| c.supported).count(), 7);
+        let brightness = s
+            .controls
+            .iter()
+            .find(|c| c.id == MonitorControlId::Brightness)
+            .unwrap();
+        assert_eq!(brightness.current, Some(95));
+        assert_eq!(brightness.maximum, Some(100));
+        assert!(brightness.writable);
+        assert!(
+            !s.controls
+                .iter()
+                .find(|c| c.id == MonitorControlId::Backlight)
+                .unwrap()
+                .supported
+        );
+        assert_eq!(f.writes(), 0);
+        f.change("set_exit", json!(1));
+        let error = f
+            .controller
+            .set(MonitorControlId::Brightness, 94)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("exit status: 1"));
+        assert!(error.to_string().contains("unconfirmed"));
+        assert_eq!(f.writes(), 1);
+        assert!(!f.controller.snapshot().await.available);
+    }
+
+    #[tokio::test]
+    async fn failed_batch_keeps_fresh_identity_but_never_supports_fatal_or_malformed_rows() {
+        for (key, value, diagnostic) in [
+            ("batch_exit", json!(2), "exit status: 2"),
+            ("batch_signal", json!(true), "signal:"),
+            ("batch_stderr", json!(true), "fatal transport failure"),
+            ("batch_empty", json!(true), "stdout=<empty>"),
+            ("batch_malformed", json!(true), "exit status: 1"),
+        ] {
+            let f = Fixture::new(true);
+            f.change("batch_exit", json!(1));
+            f.change(key, value);
+            let error = f.controller.refresh().await.unwrap_err();
+            assert!(error.to_string().contains(diagnostic), "{key}: {error}");
+            let s = f.controller.snapshot().await;
+            assert!(s.identity_verified, "{key}");
+            assert_eq!(s.connector.as_deref(), Some("DP-2"));
+            assert_eq!(s.serial.as_deref(), Some("035926215698"));
+            assert_eq!(s.i2c_bus, Some(12));
+            assert!(!s.available);
+            assert!(s.controls.iter().all(|c| !c.supported && !c.writable));
+            assert_eq!(f.writes(), 0);
+        }
+    }
+
+    #[test]
+    fn partial_batch_requires_complete_unique_expected_valid_rows_and_an_err() {
+        let valid = "VCP 10 C 95 100\nVCP 6B ERR\nVCP 12 C 50 100\nVCP 16 C 151 255\nVCP 18 C 127 255\nVCP 1A C 139 255\nVCP 87 C 2 4\nVCP 14 CNC x00 x0b x00 x0b\n";
+        assert!(valid_mixed_vcp_batch(valid));
+        for invalid in [
+            "".to_string(),
+            valid.replace("VCP 6B ERR\n", ""),
+            valid.replace("VCP 6B ERR", "VCP 6B ERR fatal"),
+            valid.replace("VCP 6B ERR", "VCP 6B C 1 100"),
+            valid.replace("VCP 12 C 50 100", "VCP 10 C 50 100"),
+            valid.replace("VCP 12 C 50 100", "VCP 60 C 50 100"),
+            valid.replace("VCP 12 C 50 100", "VCP 12 C 101 100"),
+            format!("{valid}fatal transport failure\n"),
+            format!("{valid}{}", " ".repeat(MAX_OUTPUT as usize)),
+            CONTROLS
+                .iter()
+                .map(|id| format!("VCP {:02X} ERR\n", id.code()))
+                .collect(),
+        ] {
+            assert!(!valid_mixed_vcp_batch(&invalid), "{invalid}");
+        }
+    }
+
     #[tokio::test]
     async fn raw_and_legacy_percent_writes_require_matching_readback_and_fixed_args() {
         let f = Fixture::new(true);
