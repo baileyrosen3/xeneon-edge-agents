@@ -293,6 +293,9 @@ TestCase {
         dashboards.previewMode = false;
         dashboards.selectDashboard(0);
         var trading = findChild(dashboards, "riptideDashboard");
+        trading.unknownOutcome = false;
+        trading.unknownAtMs = 0;
+        trading.confirmationIsReview = false;
         trading.quantity = 1;
         trading.pendingRequest = "";
         trading.keypadField = "";
@@ -353,6 +356,59 @@ TestCase {
         verify(!trading.canPlace);
         verify(!trading.submit("buy", false));
         compare(bridge.tradingRequests, 0);
+    }
+    function test_unknownOutcomeRequiresExplicitFreshReviewWithoutResend() {
+        dashboards.selectDashboard(1);
+        var trading = findChild(dashboards, "riptideDashboard");
+        verify(trading.submit("buy", false));
+        store.actionResultReceived({
+            request_id: "trading-1",
+            ok: false,
+            code: "trading_unknown",
+            message: "Transport response lost"
+        });
+        verify(trading.unknownOutcome);
+        verify(!trading.canExecute);
+        verify(!trading.reviewOutcome());
+        var currentSnapshot = snapshot();
+        currentSnapshot.sampled_at_ms = Date.now() + 1;
+        store.trading = currentSnapshot;
+        verify(trading.reviewOutcome());
+        compare(bridge.tradingRequests, 1);
+        verify(trading.resumeReviewed());
+        compare(trading.pendingRequest, "");
+        verify(!trading.unknownOutcome);
+        compare(bridge.tradingRequests, 1);
+        verify(!trading.resumeReviewed());
+    }
+    function test_pendingAcknowledgementIsNotFulfillment() {
+        dashboards.selectDashboard(1);
+        var trading = findChild(dashboards, "riptideDashboard");
+        verify(trading.submit("buy", false));
+        store.trading = Object.assign({}, store.trading, {
+            execution_enabled: false
+        });
+        store.actionResultReceived({
+            request_id: "trading-1",
+            ok: true,
+            code: "trading_pending",
+            message: "Awaiting broker projection"
+        });
+        compare(trading.pendingRequest, "");
+        verify(!trading.feedbackSuccess);
+        verify(!trading.canExecute);
+        verify(trading.feedback.indexOf("AWAITING BROKER UPDATE") >= 0);
+    }
+    function test_trailingStopRequiresTickAlignedInitialStop() {
+        dashboards.selectDashboard(1);
+        var trading = findChild(dashboards, "riptideDashboard");
+        trading.orderType = "trailing_stop";
+        trading.stopPrice = "";
+        verify(!trading.submit("sell", false));
+        trading.stopPrice = "5800.25";
+        verify(trading.submit("sell", false));
+        compare(bridge.lastTrading.stop_price, 5800.25);
+        compare(bridge.lastTrading.trail_ticks, 8);
     }
     function test_previewBlocksBothActionFamilies() {
         dashboards.previewMode = true;

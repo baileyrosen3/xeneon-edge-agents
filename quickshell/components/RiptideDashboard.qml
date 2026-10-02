@@ -24,6 +24,9 @@ Item {
     property int tpTicks: 16
     property string activityTab: "positions"
     property string pendingRequest: ""
+    property bool unknownOutcome: false
+    property double unknownAtMs: 0
+    readonly property bool canReviewOutcome: unknownOutcome && pendingRequest !== "" && current && !previewMode && Number(trading.sampled_at_ms || 0) > unknownAtMs
     property string feedback: ""
     property bool feedbackSuccess: false
     property bool selectorOpen: false
@@ -31,6 +34,7 @@ Item {
     property string keypadField: ""
     property bool confirmationOpen: false
     property string confirmationTitle: ""
+    property bool confirmationIsReview: false
     property string confirmationDetail: ""
     property var confirmationPayload: ({})
     property var editingOrder: null
@@ -97,7 +101,7 @@ Item {
         return Math.abs(value / tickSize - Math.round(value / tickSize)) < 0.00001;
     }
     function payloadFor(side, join) {
-        if (selectedSymbol === "" || !quote.symbol || quantity < 1 || quantity > 10000) {
+        if (selectedSymbol === "" || !quote.symbol || quantity < 1 || quantity > 1000) {
             feedback = "Choose an available contract and quantity";
             return null;
         }
@@ -125,8 +129,14 @@ Item {
             }
             payload.stop_price = Number(stopPrice);
         }
-        if (type === "trailing_stop")
+        if (type === "trailing_stop") {
+            if (!tickAligned(Number(stopPrice))) {
+                feedback = "Initial trailing stop must match the contract tick size";
+                return null;
+            }
+            payload.stop_price = Number(stopPrice);
             payload.trail_ticks = trailTicks;
+        }
         if (brackets) {
             if (!["market", "limit"].includes(type)) {
                 feedback = "Brackets require a Market or Limit entry";
@@ -151,6 +161,8 @@ Item {
             return false;
         }
         pendingRequest = String(requestId);
+        unknownOutcome = false;
+        unknownAtMs = 0;
         feedback = "SENDING  ·  Awaiting server acknowledgement";
         feedbackSuccess = false;
         outcomeTimer.restart();
@@ -168,10 +180,44 @@ Item {
         if (!canExecute)
             return;
         activity.noteUserActivity();
+        confirmationIsReview = false;
         confirmationTitle = title;
         confirmationDetail = detail;
         confirmationPayload = payload;
         confirmationOpen = true;
+    }
+    function markUnknown(detail) {
+        unknownOutcome = true;
+        unknownAtMs = Date.now();
+        feedbackSuccess = false;
+        feedback = "OUTCOME UNKNOWN  ·  " + detail;
+        outcomeTimer.stop();
+    }
+    function reviewOutcome() {
+        if (!canReviewOutcome)
+            return false;
+        activity.noteUserActivity();
+        activityTab = "orders";
+        confirmationIsReview = true;
+        confirmationTitle = "REVIEW EXECUTION OUTCOME";
+        confirmationDetail = "Review current orders and positions in account " + selectedAccount + " before resuming. " + orders.filter(working).length + " working orders and " + positions.length + " positions are currently reported. The previous request will never be resent.";
+        confirmationPayload = ({});
+        confirmationOpen = true;
+        return true;
+    }
+    function resumeReviewed() {
+        if (!confirmationOpen || !confirmationIsReview || !canReviewOutcome)
+            return false;
+        activity.noteUserActivity();
+        pendingRequest = "";
+        unknownOutcome = false;
+        unknownAtMs = 0;
+        outcomeTimer.stop();
+        confirmationOpen = false;
+        confirmationIsReview = false;
+        feedbackSuccess = false;
+        feedback = "RESUMED AFTER REVIEW  ·  Previous request was not resent";
+        return true;
     }
     function edit(order) {
         if (!canExecute || !working(order))
@@ -188,7 +234,7 @@ Item {
         var orderQuote = find(quotes, "symbol", String(editingOrder.symbol)) || ({});
         var step = Number(orderQuote.tick_size || 0);
         var count = Number(editQuantity);
-        if (!Number.isInteger(count) || count < 1 || count > 10000 || !Number.isFinite(value) || value <= 0 || step <= 0 || Math.abs(value / step - Math.round(value / step)) > 0.00001) {
+        if (!Number.isInteger(count) || count < 1 || count > 1000 || !Number.isFinite(value) || value <= 0 || step <= 0 || Math.abs(value / step - Math.round(value / step)) > 0.00001) {
             feedback = "Enter valid quantity and a tick-aligned price";
             return;
         }
@@ -216,8 +262,8 @@ Item {
     function applyNumber(value) {
         var n = Number(value);
         var field = keypadField;
-        if (["quantity", "slTicks", "tpTicks", "trailTicks", "editQuantity"].includes(field) && (!Number.isInteger(n) || n < 1 || n > 10000)) {
-            keypad.error = "Use a whole number from 1 to 10000";
+        if (["quantity", "slTicks", "tpTicks", "trailTicks", "editQuantity"].includes(field) && (!Number.isInteger(n) || n < 1 || n > 1000)) {
+            keypad.error = "Use a whole number from 1 to 1000";
             return;
         }
         if (["price", "stopPrice", "editPrice"].includes(field) && n <= 0) {
@@ -239,21 +285,24 @@ Item {
         function onActionResultReceived(result) {
             if (String(result.request_id || "") !== root.pendingRequest || root.pendingRequest === "")
                 return;
-            if (result.ok !== true && ["outcome_unknown", "timeout", "execution_timeout"].includes(String(result.code || ""))) {
-                root.feedbackSuccess = false;
-                root.feedback = "OUTCOME UNKNOWN  ·  " + String(result.message || "Awaiting server reconciliation; order will not be resent");
+            var code = String(result.code || "");
+            if (["trading_unknown", "outcome_unknown", "timeout", "execution_timeout"].includes(code)) {
+                root.markUnknown(String(result.message || "Awaiting server reconciliation; order will not be resent"));
                 return;
             }
             root.pendingRequest = "";
+            root.unknownOutcome = false;
+            root.unknownAtMs = 0;
             outcomeTimer.stop();
-            root.feedbackSuccess = result.ok === true;
-            root.feedback = (result.ok === true ? "SERVER ACKNOWLEDGED  ·  " : "ACTION RESULT  ·  ") + String(result.message || result.code || "");
+            var awaiting = ["trading_pending", "outcome_pending"].includes(code);
+            root.feedbackSuccess = result.ok === true && !awaiting;
+            root.feedback = (awaiting ? "ACKNOWLEDGED  ·  AWAITING BROKER UPDATE  ·  " : result.ok === true ? "SERVER ACKNOWLEDGED  ·  " : "ACTION RESULT  ·  ") + String(result.message || result.code || "");
         }
     }
     Timer {
         id: outcomeTimer
         interval: 15000
-        onTriggered: root.feedback = "OUTCOME UNKNOWN  ·  Awaiting reconciliation; order will not be resent"
+        onTriggered: root.markUnknown("Awaiting reconciliation; order will not be resent")
     }
     Timer {
         interval: 1000
@@ -297,7 +346,7 @@ Item {
                 font.pixelSize: 18
             }
             Text {
-                width: parent.width - 1280
+                width: parent.width - 1280 - (root.unknownOutcome ? 292 : 0)
                 anchors.verticalCenter: parent.verticalCenter
                 text: {
                     root.clockTick;
@@ -310,6 +359,16 @@ Item {
                 font.pixelSize: 15
                 horizontalAlignment: Text.AlignRight
                 elide: Text.ElideRight
+            }
+            DashboardButton {
+                objectName: "riptideReviewOutcome"
+                theme: root.theme
+                width: 280
+                height: 44
+                visible: root.unknownOutcome
+                label: "REVIEW & RESUME"
+                enabled: root.canReviewOutcome
+                onClicked: root.reviewOutcome()
             }
         }
         Row {
@@ -577,7 +636,7 @@ Item {
                             theme: root.theme
                             width: 84
                             label: "+"
-                            enabled: root.quantity < 10000 && root.pendingRequest === ""
+                            enabled: root.quantity < 1000 && root.pendingRequest === ""
                             onClicked: {
                                 root.activity.noteUserActivity();
                                 root.quantity += 1;
@@ -610,7 +669,18 @@ Item {
                             enabled: root.orderType !== "market" && root.pendingRequest === ""
                             onClicked: root.openKeypad(root.orderType === "limit" ? "price" : root.orderType === "stop_market" ? "stopPrice" : "trailTicks", root.orderType === "trailing_stop" ? "TRAIL DISTANCE IN TICKS" : "ORDER PRICE", root.orderType === "limit" ? root.price : root.orderType === "stop_market" ? root.stopPrice : root.trailTicks, root.orderType === "trailing_stop")
                         }
+                        DashboardButton {
+                            theme: root.theme
+                            width: 434
+                            height: 48
+                            visible: root.orderType === "trailing_stop"
+                            label: "INITIAL STOP " + (root.stopPrice || "SET PRICE")
+                            detail: "Tick " + root.number(root.tickSize || null) + " · point " + root.money(root.pointValue || null)
+                            enabled: root.pendingRequest === ""
+                            onClicked: root.openKeypad("stopPrice", "INITIAL TRAILING STOP PRICE", root.stopPrice, false)
+                        }
                         Text {
+                            visible: root.orderType !== "trailing_stop"
                             width: parent.width - 430
                             height: 48
                             text: "TICK " + root.number(root.tickSize || null) + "  ·  POINT " + root.money(root.pointValue || null) + "\nSPREAD " + (root.quote.bid && root.quote.ask ? root.number(Number(root.quote.ask) - Number(root.quote.bid)) : "—")
@@ -761,6 +831,8 @@ Item {
                         boundsBehavior: Flickable.StopAtBounds
                         model: root.activityTab === "positions" ? root.positions : root.activityTab === "orders" ? root.orders : root.activityTab === "closed" ? root.closedFills : root.fills
                         delegate: DashboardCard {
+                            id: activityCard
+                            readonly property var record: modelData || ({})
                             required property var modelData
                             theme: root.theme
                             width: activityList.width
@@ -774,7 +846,7 @@ Item {
                                     width: parent.width
                                     Text {
                                         width: parent.width * 0.62
-                                        text: String(modelData.symbol) + "  ·  " + (root.activityTab === "positions" ? Number(modelData.quantity) > 0 ? "LONG" : "SHORT" : String(modelData.side || "").toUpperCase()) + " ×" + Math.abs(Number(modelData.quantity))
+                                        text: String(activityCard.record.symbol) + "  ·  " + (root.activityTab === "positions" ? Number(activityCard.record.quantity) > 0 ? "LONG" : "SHORT" : String(activityCard.record.side || "").toUpperCase()) + " ×" + Math.abs(Number(activityCard.record.quantity))
                                         textFormat: Text.PlainText
                                         color: root.theme.textPrimary
                                         font.family: "monospace"
@@ -783,9 +855,9 @@ Item {
                                     }
                                     Text {
                                         width: parent.width * 0.38
-                                        text: root.activityTab === "positions" ? root.money(modelData.open_pnl) : root.activityTab === "orders" ? String(modelData.status || "UNKNOWN").toUpperCase() : root.money(modelData.pnl)
+                                        text: root.activityTab === "positions" ? root.money(activityCard.record.open_pnl) : root.activityTab === "orders" ? String(activityCard.record.status || "UNKNOWN").toUpperCase() : root.money(activityCard.record.pnl)
                                         textFormat: Text.PlainText
-                                        color: Number(modelData.open_pnl || modelData.pnl || 0) < 0 ? root.theme.error : root.theme.success
+                                        color: Number(activityCard.record.open_pnl || activityCard.record.pnl || 0) < 0 ? root.theme.error : root.theme.success
                                         font.family: "monospace"
                                         font.pixelSize: 20
                                         horizontalAlignment: Text.AlignRight
@@ -794,7 +866,7 @@ Item {
                                 }
                                 Text {
                                     width: parent.width
-                                    text: root.activityTab === "positions" ? "ENTRY " + root.number(modelData.average_price) + "  ·  LAST " + root.number((root.find(root.quotes, "symbol", String(modelData.symbol)) || {}).last) : root.activityTab === "orders" ? String(modelData.order_type).toUpperCase() + "  ·  PRICE " + root.number(modelData.price) + "  ·  STOP " + root.number(modelData.stop_price) + "  ·  FILLED " + modelData.filled_quantity : "PRICE " + root.number(modelData.price) + "  ·  " + Qt.formatDateTime(new Date(Number(modelData.time_ms || 0)), "hh:mm:ss") + "  ·  FEES " + root.money(modelData.fees)
+                                    text: root.activityTab === "positions" ? "ENTRY " + root.number(activityCard.record.average_price) + "  ·  LAST " + root.number((root.find(root.quotes, "symbol", String(activityCard.record.symbol)) || {}).last) : root.activityTab === "orders" ? String(activityCard.record.order_type).toUpperCase() + "  ·  PRICE " + root.number(activityCard.record.price) + "  ·  STOP " + root.number(activityCard.record.stop_price) + "  ·  FILLED " + activityCard.record.filled_quantity : "PRICE " + root.number(activityCard.record.price) + "  ·  " + Qt.formatDateTime(new Date(Number(activityCard.record.time_ms || 0)), "hh:mm:ss") + "  ·  FEES " + root.money(activityCard.record.fees)
                                     textFormat: Text.PlainText
                                     color: root.theme.textMuted
                                     font.family: "monospace"
@@ -804,7 +876,7 @@ Item {
                                 Text {
                                     width: parent.width
                                     visible: root.activityTab === "positions"
-                                    text: root.protection(modelData)
+                                    text: root.protection(activityCard.record)
                                     textFormat: Text.PlainText
                                     color: root.theme.needsHelp
                                     font.family: "monospace"
@@ -820,13 +892,13 @@ Item {
                                         width: (parent.width - 20) / 3
                                         height: 44
                                         label: root.activityTab === "positions" ? "VIEW SL / TP" : "MODIFY"
-                                        enabled: root.activityTab === "positions" || (root.canExecute && root.working(modelData) && ["limit", "stop_market", "stop_limit"].includes(String(modelData.order_type)))
+                                        enabled: root.activityTab === "positions" || (root.canExecute && root.working(activityCard.record) && ["limit", "stop_market", "stop_limit"].includes(String(activityCard.record.order_type)))
                                         onClicked: {
                                             if (root.activityTab === "positions") {
                                                 root.activity.noteUserActivity();
                                                 root.activityTab = "orders";
                                             } else
-                                                root.edit(modelData);
+                                                root.edit(activityCard.record);
                                         }
                                     }
                                     DashboardButton {
@@ -835,15 +907,15 @@ Item {
                                         height: 44
                                         label: root.activityTab === "positions" ? "CLOSE" : "CANCEL"
                                         destructive: true
-                                        enabled: root.canExecute && (root.activityTab === "positions" ? root.trading.supports_flatten === true : root.working(modelData))
-                                        onClicked: root.confirm(root.activityTab === "positions" ? "CLOSE POSITION" : "CANCEL ORDER", String(modelData.symbol) + "  ·  account " + root.selectedAccount, root.activityTab === "positions" ? {
+                                        enabled: root.canExecute && (root.activityTab === "positions" ? root.trading.supports_flatten === true : root.working(activityCard.record))
+                                        onClicked: root.confirm(root.activityTab === "positions" ? "CLOSE POSITION" : "CANCEL ORDER", String(activityCard.record.symbol) + "  ·  account " + root.selectedAccount, root.activityTab === "positions" ? {
                                             action: "close",
                                             account_id: root.selectedAccount,
-                                            symbol: String(modelData.symbol)
+                                            symbol: String(activityCard.record.symbol)
                                         } : {
                                             action: "cancel",
                                             account_id: root.selectedAccount,
-                                            order_id: String(modelData.id)
+                                            order_id: String(activityCard.record.id)
                                         })
                                     }
                                     DashboardButton {
@@ -854,10 +926,10 @@ Item {
                                         destructive: true
                                         visible: root.activityTab === "positions"
                                         enabled: root.canExecute && root.trading.supports_flatten === true
-                                        onClicked: root.confirm("REVERSE POSITION", "Reverse " + String(modelData.symbol) + " ×" + Math.abs(Number(modelData.quantity)) + " in " + root.selectedAccount + "?", {
+                                        onClicked: root.confirm("REVERSE POSITION", "Reverse " + String(activityCard.record.symbol) + " ×" + Math.abs(Number(activityCard.record.quantity)) + " in " + root.selectedAccount + "?", {
                                             action: "reverse",
                                             account_id: root.selectedAccount,
-                                            symbol: String(modelData.symbol)
+                                            symbol: String(activityCard.record.symbol)
                                         })
                                     }
                                 }
@@ -875,15 +947,21 @@ Item {
                 }
             }
         }
-        Text {
+        Row {
             width: parent.width
             height: 24
-            text: root.feedback || String(root.trading.message || (root.current ? "Ready  ·  Choose account and contract" : "Trading unavailable until the authenticated Vultr feed is connected"))
-            textFormat: Text.PlainText
-            color: root.feedbackSuccess ? root.theme.success : root.theme.needsHelp
-            font.family: "monospace"
-            font.pixelSize: 16
-            elide: Text.ElideRight
+            spacing: 12
+            Text {
+                width: parent.width
+                height: parent.height
+                verticalAlignment: Text.AlignVCenter
+                text: root.feedback || String(root.trading.message || (root.current ? "Ready  ·  Choose account and contract" : "Trading unavailable until the authenticated Vultr feed is connected"))
+                textFormat: Text.PlainText
+                color: root.feedbackSuccess ? root.theme.success : root.theme.needsHelp
+                font.family: "monospace"
+                font.pixelSize: 16
+                elide: Text.ElideRight
+            }
         }
     }
     Item {
@@ -971,7 +1049,7 @@ Item {
             theme: root.theme
             anchors.centerIn: parent
             width: 860
-            height: 330
+            height: root.confirmationIsReview ? 380 : 330
             Column {
                 anchors.fill: parent
                 anchors.margins: 28
@@ -986,7 +1064,7 @@ Item {
                 }
                 Text {
                     width: parent.width
-                    height: 88
+                    height: root.confirmationIsReview ? 130 : 88
                     text: root.confirmationDetail
                     textFormat: Text.PlainText
                     color: root.theme.textPrimary
@@ -1013,10 +1091,14 @@ Item {
                         theme: root.theme
                         width: 392
                         height: 58
-                        label: "CONFIRM ACTION"
-                        destructive: true
-                        enabled: root.current && !root.previewMode && root.trading.execution_enabled === true && root.pendingRequest === ""
+                        label: root.confirmationIsReview ? "I REVIEWED · RESUME" : "CONFIRM ACTION"
+                        destructive: !root.confirmationIsReview
+                        enabled: root.confirmationIsReview ? root.canReviewOutcome : root.current && !root.previewMode && root.trading.execution_enabled === true && root.pendingRequest === ""
                         onClicked: {
+                            if (root.confirmationIsReview) {
+                                root.resumeReviewed();
+                                return;
+                            }
                             var payload = root.confirmationPayload;
                             root.confirmationOpen = false;
                             root.request(payload);
