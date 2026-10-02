@@ -2,8 +2,7 @@
 -- authority. This module only maps the exact touchscreen and requests a fixed
 -- lifecycle reconciliation when the commissioned screen changes.
 local touchDevice = "@TOUCH_DEVICE@"
-local startReconcileCommand =
-  "/usr/bin/systemctl --user start xeneon-edge-reconcile.service"
+local startSessionCommand = @SESSION_COMMAND@
 local restartReconcileCommand =
   "/usr/bin/systemctl --user restart xeneon-edge-reconcile.service"
 
@@ -17,9 +16,9 @@ local function disableTouch()
   })
 end
 
-local function startReconcile()
+local function startSession()
   disableTouch()
-  hl.exec_cmd(startReconcileCommand)
+  hl.exec_cmd(startSessionCommand)
 end
 
 local function restartReconcile()
@@ -30,6 +29,10 @@ local function restartReconcile()
   hl.exec_cmd(restartReconcileCommand)
 end
 
+-- Initial module load also handles config reloads in an existing session. The
+-- start callback covers the first boot load before the session environment and
+-- IPC become ready. The helper serializes and bounds both invocations.
+hl.on("hyprland.start", startSession)
 hl.on("monitor.added", restartReconcile)
 hl.on("monitor.removed", restartReconcile)
-startReconcile()
+startSession()

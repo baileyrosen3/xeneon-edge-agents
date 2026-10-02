@@ -97,7 +97,7 @@ if [[ -f "$desktop_target" ]]; then
 fi
 
 for executable in \
-  xeneon-agentd xeneon-agentctl xeneon-edge-launch xeneon-edge-reconcile; do
+  xeneon-agentd xeneon-agentctl xeneon-edge-launch xeneon-edge-reconcile xeneon-edge-session; do
   if [[ -x "$bin_home/$executable" ]]; then
     printf 'ok: executable: %s\n' "$bin_home/$executable"
   else

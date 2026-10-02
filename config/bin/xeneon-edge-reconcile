@@ -163,7 +163,7 @@ if [[ -n "${XENEON_HYPR_MONITORS_JSON:-}" ]]; then
   monitors_payload=$(cat -- "$XENEON_HYPR_MONITORS_JSON") ||
     unexpected_failure
 else
-  monitors_payload=$("$hyprctl_bin" -j monitors all 2>/dev/null) ||
+  monitors_payload=$("$hyprctl_bin" -j monitors 2>/dev/null) ||
     block_stack "Hyprland monitor inventory is unavailable"
 fi
 
@@ -180,64 +180,66 @@ except (json.JSONDecodeError, TypeError):
 print(sum(1 for monitor in monitors
           if monitor.get("name") == connector
           and monitor.get("serial") == serial
-          and monitor.get("model") == model))
+          and monitor.get("model") == model
+          and monitor.get("disabled", False) is False
+          and type(monitor.get("id")) is int and monitor["id"] >= 0
+          and type(monitor.get("width")) is int and monitor["width"] > 0
+          and type(monitor.get("height")) is int and monitor["height"] > 0))
 ' "$connector" "$output_serial" "$output_model" <<<"$monitors_payload")
 [[ "$monitor_matches" == 1 ]] ||
-  block_stack "resolved output failed exact Hyprland serial/model verification"
+  block_stack "resolved output is inactive or failed exact Hyprland serial/model verification"
 
-kernel_touch_matches=0
-while IFS= read -r -d '' event_path; do
-  properties=
-  if [[ "$sys_root" == /sys ]] && command -v udevadm >/dev/null 2>&1; then
-    properties=$(udevadm info --query=property --path="$event_path" 2>/dev/null || true)
-  elif [[ -r "$event_path/device/properties" ]]; then
-    properties=$(<"$event_path/device/properties")
-  fi
-  grep -Fqx 'ID_INPUT_TOUCHSCREEN=1' <<<"$properties" || continue
-  for field in name id/bustype id/vendor id/product uniq phys; do
-    [[ -r "$event_path/device/$field" ]] || continue 2
-  done
-  kernel_name=$(<"$event_path/device/name")
-  normalized_name=${kernel_name,,}
-  normalized_name=${normalized_name// /-}
-  if [[ "$touch_device" != "$normalized_name" ]]; then
-    suffix=${touch_device#"$normalized_name"-}
-    [[ "$touch_device" == "$normalized_name"-* && "$suffix" =~ ^[0-9]+$ ]] || continue
-  fi
-  kernel_bustype=$(<"$event_path/device/id/bustype")
-  kernel_vendor=$(<"$event_path/device/id/vendor")
-  kernel_product=$(<"$event_path/device/id/product")
-  [[ "${kernel_bustype,,}" == "${touch_bustype,,}" &&
-    "${kernel_vendor,,}" == "${touch_vendor,,}" &&
-    "${kernel_product,,}" == "${touch_product,,}" ]] || continue
-  if [[ -n "$touch_uniq" ]]; then
-    [[ "$(<"$event_path/device/uniq")" == "$touch_uniq" ]] || continue
-  else
-    [[ -n "$touch_phys" && "$(<"$event_path/device/phys")" == "$touch_phys" ]] || continue
-  fi
-  kernel_touch_matches=$((kernel_touch_matches + 1))
-done < <(
-  find -L "$sys_root/class/input" -mindepth 1 -maxdepth 1 \
-    -type d -name 'event*' -print0 2>/dev/null
-)
-[[ "$kernel_touch_matches" == 1 ]] ||
-  block_stack "exact USB touchscreen is absent or ambiguous"
+count_kernel_touch_matches() {
+  local event_path properties field kernel_name normalized_name suffix
+  local kernel_bustype kernel_vendor kernel_product
+  kernel_touch_matches=0
+  while IFS= read -r -d '' event_path; do
+    properties=
+    if [[ "$sys_root" == /sys ]] && command -v udevadm >/dev/null 2>&1; then
+      properties=$(udevadm info --query=property --path="$event_path" 2>/dev/null || true)
+    elif [[ -r "$event_path/device/properties" ]]; then
+      properties=$(<"$event_path/device/properties")
+    fi
+    grep -Fqx 'ID_INPUT_TOUCHSCREEN=1' <<<"$properties" || continue
+    for field in name id/bustype id/vendor id/product uniq phys; do
+      [[ -r "$event_path/device/$field" ]] || continue 2
+    done
+    kernel_name=$(<"$event_path/device/name")
+    normalized_name=${kernel_name,,}
+    normalized_name=${normalized_name// /-}
+    if [[ "$touch_device" != "$normalized_name" ]]; then
+      suffix=${touch_device#"$normalized_name"-}
+      [[ "$touch_device" == "$normalized_name"-* && "$suffix" =~ ^[0-9]+$ ]] || continue
+    fi
+    kernel_bustype=$(<"$event_path/device/id/bustype")
+    kernel_vendor=$(<"$event_path/device/id/vendor")
+    kernel_product=$(<"$event_path/device/id/product")
+    [[ "${kernel_bustype,,}" == "${touch_bustype,,}" &&
+      "${kernel_vendor,,}" == "${touch_vendor,,}" &&
+      "${kernel_product,,}" == "${touch_product,,}" ]] || continue
+    if [[ -n "$touch_uniq" ]]; then
+      [[ "$(<"$event_path/device/uniq")" == "$touch_uniq" ]] || continue
+    else
+      [[ -n "$touch_phys" && "$(<"$event_path/device/phys")" == "$touch_phys" ]] || continue
+    fi
+    kernel_touch_matches=$((kernel_touch_matches + 1))
+  done < <(
+    find -L "$sys_root/class/input" -mindepth 1 -maxdepth 1 \
+      -type d -name 'event*' -print0 2>/dev/null
+  )
+}
 
-# The kernel event node appears before Hyprland/libinput necessarily publishes
-# the touch device. Retry only this proven settling case; a missing or ambiguous
-# kernel identity already failed above without delay.
-hypr_touch_matches=0
-for attempt in 0 1 2 3 4; do
+count_hypr_touch_matches() {
+  local devices_payload
   if [[ -n "${XENEON_HYPR_DEVICES_JSON:-}" ]]; then
-    devices_payload=$(cat -- "$XENEON_HYPR_DEVICES_JSON") ||
-      unexpected_failure
+    devices_payload=$(cat -- "$XENEON_HYPR_DEVICES_JSON") || { hypr_touch_matches=-1; return 0; }
   else
-    devices_payload=$("$hyprctl_bin" -j devices 2>/dev/null) ||
-      block_stack "Hyprland touch inventory is unavailable"
+    devices_payload=$("$hyprctl_bin" -j devices 2>/dev/null) || { hypr_touch_matches=-1; return 0; }
   fi
   hypr_touch_matches=$(python3 -c '
-import json, sys
+import json, re, sys
 wanted = sys.argv[1]
+base = re.sub(r"-[0-9]+$", "", wanted)
 try:
     devices = json.load(sys.stdin)
     touch = devices.get("touch") if isinstance(devices, dict) else None
@@ -246,14 +248,34 @@ try:
 except (json.JSONDecodeError, TypeError):
     print(-1)
     raise SystemExit
-print(sum(1 for device in touch
-          if device.get("name") == wanted))
+names = [device.get("name") for device in touch]
+family = sum(1 for name in names if isinstance(name, str)
+             and (name == base or re.fullmatch(re.escape(base) + r"-[0-9]+", name)))
+exact = sum(1 for name in names if name == wanted)
+print(1 if exact == 1 and family == 1 else (2 if family > 1 or exact > 1 else 0))
 ' "$touch_device" <<<"$devices_payload")
-  [[ "$hypr_touch_matches" == 1 ]] && break
-  ((attempt == 4)) || sleep 0.25
-done
-[[ "$hypr_touch_matches" == 1 ]] ||
-  block_stack "exact Hyprland touchscreen is absent or ambiguous"
+}
+
+count_kernel_touch_matches
+touch_ready=0
+touch_detail="exact USB touchscreen is absent or ambiguous"
+if [[ "$kernel_touch_matches" == 1 ]]; then
+  # The kernel event node can precede Hyprland/libinput. A path event triggers
+  # another pass if USB re-enumeration takes longer than this bounded settle.
+  for attempt in 0 1 2 3 4; do
+    count_hypr_touch_matches
+    [[ "$hypr_touch_matches" == 1 ]] && break
+    [[ "$hypr_touch_matches" == 0 && "$attempt" != 4 ]] || break
+    sleep 0.25
+  done
+  if [[ "$hypr_touch_matches" == 1 ]]; then
+    touch_ready=1
+  elif [[ "$hypr_touch_matches" == -1 ]]; then
+    touch_detail="Hyprland touch inventory is unavailable or invalid"
+  else
+    touch_detail="exact Hyprland touchscreen is absent or ambiguous"
+  fi
+fi
 
 # A monitor can disappear while libinput is settling the touchscreen. The Lua
 # callback queues a durable service restart for that edge, while this final
@@ -277,7 +299,7 @@ if [[ -n "${XENEON_HYPR_MONITORS_JSON:-}" ]]; then
   final_monitors_payload=$(cat -- "$XENEON_HYPR_MONITORS_JSON") ||
     unexpected_failure
 else
-  final_monitors_payload=$("$hyprctl_bin" -j monitors all 2>/dev/null) ||
+  final_monitors_payload=$("$hyprctl_bin" -j monitors 2>/dev/null) ||
     block_stack "Hyprland monitor inventory changed during reconciliation"
 fi
 final_monitor_matches=$(python3 -c '
@@ -293,7 +315,11 @@ except (json.JSONDecodeError, TypeError):
 print(sum(1 for monitor in monitors
           if monitor.get("name") == connector
           and monitor.get("serial") == serial
-          and monitor.get("model") == model))
+          and monitor.get("model") == model
+          and monitor.get("disabled", False) is False
+          and type(monitor.get("id")) is int and monitor["id"] >= 0
+          and type(monitor.get("width")) is int and monitor["width"] > 0
+          and type(monitor.get("height")) is int and monitor["height"] > 0))
 ' "$connector" "$output_serial" "$output_model" <<<"$final_monitors_payload")
 [[ "$final_monitor_matches" == 1 ]] ||
   block_stack "Hyprland output changed during reconciliation"
@@ -305,7 +331,19 @@ printf 'XENEON_EDGE_OUTPUT=%s\n' "$connector" >"$environment_temp"
 chmod 0600 "$environment_temp"
 mv "$environment_temp" "$runtime_environment"
 
-enable_touch
+# Revalidate touch after the video settle checks, without promoting an absent
+# or ambiguous USB device to verified. Missing touch never selects another
+# monitor or input device, and does not prevent a verified display-only portal.
+if ((touch_ready)); then
+  count_kernel_touch_matches
+  count_hypr_touch_matches
+  if [[ "$kernel_touch_matches" == 1 && "$hypr_touch_matches" == 1 ]]; then
+    enable_touch
+  else
+    touch_ready=0
+    touch_detail="touch identity changed during reconciliation"
+  fi
+fi
 if ! "$systemctl_bin" --user start "$daemon_unit" "$portal_unit"; then
   disable_touch || true
   "$systemctl_bin" --user stop "$portal_unit" "$daemon_unit" || true
@@ -313,4 +351,8 @@ if ! "$systemctl_bin" --user start "$daemon_unit" "$portal_unit"; then
   record_status failed "application services did not start cleanly"
   exit 1
 fi
-record_status running "verified $connector and started the XENEON EDGE stack"
+if ((touch_ready)); then
+  record_status running "verified $connector and exact touchscreen; started the XENEON EDGE stack"
+else
+  record_status degraded "verified active $connector; $touch_detail; exact touch remains disabled"
+fi

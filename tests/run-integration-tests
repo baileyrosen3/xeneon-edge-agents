@@ -14,6 +14,8 @@ command -v lua >/dev/null 2>&1 || {
   exit 1
 }
 
+python3 "$repo_root/tests/startup_lifecycle_test.py"
+
 cargo build --workspace
 XENEON_AGENTD_BIN=${XENEON_AGENTD_BIN:-"$repo_root/target/debug/xeneon-agentd"} \
   "$repo_root/tests/install_integration.sh"

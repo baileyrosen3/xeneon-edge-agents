@@ -149,6 +149,7 @@ test_default_idempotence_and_uninstall() {
   assert_file "$root/.config/systemd/user/xeneon-edge-input.path"
   assert_file "$root/.local/bin/xeneon-edge-launch"
   assert_file "$root/.local/bin/xeneon-edge-reconcile"
+  assert_file "$root/.local/bin/xeneon-edge-session"
   [[ -x "$root/.local/bin/xeneon-edge-launch" ]] ||
     fail "desktop launcher helper is not executable"
   assert_file "$root/.local/share/applications/xeneon-edge-agents.desktop"
@@ -219,6 +220,7 @@ test_default_idempotence_and_uninstall() {
   assert_no_file "$root/.config/systemd/user/xeneon-edge-input.path"
   assert_no_file "$root/.local/bin/xeneon-edge-launch"
   assert_no_file "$root/.local/bin/xeneon-edge-reconcile"
+  assert_no_file "$root/.local/bin/xeneon-edge-session"
   assert_no_file "$root/.local/share/applications/xeneon-edge-agents.desktop"
   assert_no_file "$root/.local/share/icons/hicolor/scalable/apps/xeneon-edge-agents.svg"
   assert_file "$root/.config/hypr/hyprland.lua"
@@ -760,6 +762,7 @@ assert_lifecycle_dependency_closure() {
   assert_file "$root/.config/systemd/user/xeneon-edge-reconcile.service"
   assert_file "$root/.config/systemd/user/xeneon-edge-input.path"
   assert_file "$root/.local/bin/xeneon-edge-reconcile"
+  assert_file "$root/.local/bin/xeneon-edge-session"
   assert_file "$root/.config/xeneon-edge-agents/commissioning.toml"
 }
 
@@ -1499,10 +1502,10 @@ EOF
     SYSTEMCTL_LOG="$systemctl_log" \
     HYPRCTL_LOG="$hyprctl_log" \
     "$root/.local/bin/xeneon-edge-reconcile" >/dev/null
-  assert_no_file "$runtime/screen.env"
-  assert_contains "$runtime/lifecycle.status" 'state=blocked'
+  assert_file "$runtime/screen.env"
+  assert_contains "$runtime/lifecycle.status" 'state=degraded'
   assert_contains "$systemctl_log" \
-    '--user stop xeneon-edge-portal.service xeneon-agentd.service'
+    '--user start xeneon-agentd.service xeneon-edge-portal.service'
 
   write_hypr_devices "$devices" wch.cn-touchscreen-1
   : >"$systemctl_log"

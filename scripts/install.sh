@@ -256,6 +256,7 @@ reconcile_unit=$temp_dir/xeneon-edge-reconcile.service
 input_path_unit=$temp_dir/xeneon-edge-input.path
 launcher_helper=$temp_dir/xeneon-edge-launch
 reconcile_helper=$temp_dir/xeneon-edge-reconcile
+session_helper=$temp_dir/xeneon-edge-session
 desktop_entry=$temp_dir/xeneon-edge-agents.desktop
 render_template \
   "$repo_root/config/systemd/user/xeneon-agentd.service.in" "$daemon_unit" \
@@ -270,6 +271,7 @@ render_template \
 cp "$repo_root/config/systemd/user/xeneon-edge-input.path.in" "$input_path_unit"
 cp "$repo_root/config/bin/xeneon-edge-launch" "$launcher_helper"
 cp "$repo_root/config/bin/xeneon-edge-reconcile" "$reconcile_helper"
+cp "$repo_root/config/bin/xeneon-edge-session" "$session_helper"
 render_template \
   "$repo_root/config/applications/xeneon-edge-agents.desktop.in" "$desktop_entry" \
   BIN_HOME "$bin_home"
@@ -280,6 +282,7 @@ reconcile_target=$systemd_dir/xeneon-edge-reconcile.service
 input_path_target=$systemd_dir/xeneon-edge-input.path
 launcher_target=$bin_home/xeneon-edge-launch
 reconcile_helper_target=$bin_home/xeneon-edge-reconcile
+session_helper_target=$bin_home/xeneon-edge-session
 desktop_target=$data_home/applications/xeneon-edge-agents.desktop
 icon_target=$data_home/icons/hicolor/scalable/apps/xeneon-edge-agents.svg
 config_target=$config_dir/config.toml
@@ -302,6 +305,7 @@ preflight_managed_target "$reconcile_unit" "$reconcile_target"
 preflight_managed_target "$input_path_unit" "$input_path_target"
 preflight_managed_target "$launcher_helper" "$launcher_target"
 preflight_managed_target "$reconcile_helper" "$reconcile_helper_target"
+preflight_managed_target "$session_helper" "$session_helper_target"
 preflight_managed_target "$desktop_entry" "$desktop_target"
 preflight_managed_target \
   "$repo_root/config/icons/xeneon-edge-agents.svg" "$icon_target"
@@ -349,10 +353,11 @@ if ((apply_production)); then
     -e "s|^phys = \"\"$|phys = \"$touch_phys\"|" \
     -e 's/^enabled = false$/enabled = true/' \
     "$repo_root/config/xeneon-edge-agents/commissioning.toml.example" >"$production_commissioning"
+  session_command=$(python3 -c 'import json, shlex, sys; print(json.dumps(shlex.quote(sys.argv[1]), ensure_ascii=False))' "$session_helper_target")
   render_template \
     "$repo_root/config/hypr/xeneon_edge_agents.lua.in" "$temp_dir/xeneon_edge_agents.lua" \
     TOUCH_DEVICE "$touch_device" OUTPUT_SERIAL "$output_serial" \
-    OUTPUT_MODEL "$output_model"
+    OUTPUT_MODEL "$output_model" SESSION_COMMAND "$session_command"
   production_module=$temp_dir/xeneon_edge_agents.lua
 
   if [[ -e "$config_target" || -L "$config_target" ]]; then
@@ -489,6 +494,7 @@ if ((activate)); then
   snapshot_activation_artifact "$input_path_target"
   snapshot_activation_artifact "$launcher_target"
   snapshot_activation_artifact "$reconcile_helper_target"
+  snapshot_activation_artifact "$session_helper_target"
   snapshot_activation_artifact "$desktop_target"
   snapshot_activation_artifact "$icon_target"
   for target in "${quickshell_targets[@]}"; do
@@ -517,6 +523,7 @@ install_managed_file "$reconcile_unit" "$reconcile_target"
 install_managed_file "$input_path_unit" "$input_path_target"
 install_managed_file "$launcher_helper" "$launcher_target" 0755
 install_managed_file "$reconcile_helper" "$reconcile_helper_target" 0755
+install_managed_file "$session_helper" "$session_helper_target" 0755
 install_managed_file "$desktop_entry" "$desktop_target"
 install_managed_file \
   "$repo_root/config/icons/xeneon-edge-agents.svg" "$icon_target"
@@ -596,9 +603,20 @@ if ((activate)); then
   fi
   systemctl --user disable xeneon-agentd.service xeneon-edge-portal.service
   systemctl --user enable xeneon-edge-reconcile.service xeneon-edge-input.path
-  systemctl --user start xeneon-edge-input.path
+  if ((!apply_production)); then
+    systemctl --user start xeneon-edge-input.path
+  fi
   systemctl --user stop xeneon-edge-portal.service xeneon-agentd.service
   release_activation_gate
+  if ((apply_production)); then
+    # Reload-time helpers correctly deferred while our gate was held. Start
+    # the watcher only after importing this session, then wait for a fresh
+    # exact inventory instead of treating a condition-skipped unit as ready.
+    [[ -n "${WAYLAND_DISPLAY:-}" && -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]] ||
+      die "production activation requires the current Wayland/Hyprland environment"
+    "$session_helper_target"
+    systemctl --user is-active --quiet xeneon-edge-input.path
+  fi
   systemctl --user restart xeneon-edge-reconcile.service
   rollback_services=0
   rollback_daemon_reload=0

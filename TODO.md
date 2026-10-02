@@ -643,3 +643,29 @@ verification, installation, and the live handoff.
   `work/monitor-cold-capabilities.json`. The acceptance script stores only
   monitor state/action results and performs restoration only after a fresh
   unchanged-value check; hardware compare-and-set is unavailable.
+
+
+### Boot/session startup correction
+
+- Source startup now waits only for the current Wayland and Hyprland IPC
+  sockets, imports a fixed set of present session variables synchronously,
+  starts/verifies the input watcher, then queues reconciliation. Slow GPU
+  inventory cannot hide the watcher. Module-load/reload and `hyprland.start`
+  use the same bounded helper; an early unready call does not hold its lock.
+- Production activation invokes that helper after releasing its transaction
+  gate. The helper is an owned, reversible executable and never starts apps
+  directly or changes monitor power/layout.
+- The reconciler requires one exact EDID and active Hyprland serial/model,
+  enabled state and valid dimensions, both before and after settling. A
+  disabled output keeps daemon/portal stopped, including the DDC worker.
+- Missing/ambiguous USB or Hyprland touch now records `state=degraded` and
+  permits a verified display-only dashboard. Only the commissioned touch is
+  disabled; enabling it still requires fresh unique kernel/name-family
+  validation and exact connector mapping. Other input devices are untouched.
+- Isolated startup/lifecycle fixtures cover 13 cases; existing installer/Lua
+  lifecycle fixtures pass 31 cases. Independent source review approved the
+  final socket-only helper, activation ordering, exact active display and
+  degraded touch path and independently reproduced all 13 startup fixtures.
+  Shell syntax, Shellcheck with library definitions and diff checks pass. These are source/fixture results, not a
+  claim of successful physical boot or touch verification. The user has left
+  the EDGE output disabled; installed acceptance must preserve that choice.

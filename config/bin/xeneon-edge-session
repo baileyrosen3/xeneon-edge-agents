@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+umask 0077
+
+# Invoked only by this project's Hyprland module, at session start and reload.
+# Import the current compositor environment synchronously before restarting a
+# watcher whose boot condition may have been evaluated before that import.
+(($# == 0)) || exit 64
+[[ -n "${WAYLAND_DISPLAY:-}" && -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" &&
+  "${HYPRLAND_INSTANCE_SIGNATURE:-}" =~ ^[A-Za-z0-9_.:-]+$ &&
+  "${XDG_RUNTIME_DIR:-}" == /* && -d "$XDG_RUNTIME_DIR" ]] || exit 0
+readonly systemctl_bin=${XENEON_SYSTEMCTL:-systemctl}
+readonly transaction_gate=$XDG_RUNTIME_DIR/xeneon-edge-agents-uninstalling
+readonly session_root=$XDG_RUNTIME_DIR/xeneon-edge-agents
+readonly hypr_socket=$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock
+
+[[ ! -e "$transaction_gate" && ! -L "$transaction_gate" ]] || exit 0
+mkdir -p "$session_root"
+chmod 0700 "$session_root"
+if [[ "$WAYLAND_DISPLAY" == /* ]]; then
+  wayland_socket=$WAYLAND_DISPLAY
+else
+  wayland_socket=$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY
+fi
+# A module can load before compositor sockets exist. GPU/link stalls can
+# delay monitor queries for much longer, so never gate the watcher on a query
+# response. Inventory remains the reconciler's fail-closed responsibility.
+ready=0
+readonly deadline=$((SECONDS + 8))
+while ((SECONDS < deadline)); do
+  [[ ! -e "$transaction_gate" && ! -L "$transaction_gate" ]] || exit 0
+  if [[ -S "$wayland_socket" && -S "$hypr_socket" ]]; then
+    ready=1
+    break
+  fi
+  sleep 0.25
+done
+if (( ! ready )); then
+  printf 'xeneon-edge-session: compositor IPC did not become ready within 8 seconds\n' >&2
+  exit 1
+fi
+
+# A pre-start invocation with incomplete IPC must not hold the lock and hide
+# the later ready hyprland.start callback. Coalesce only ready startup actions.
+exec 9>"$session_root/session-start.lock"
+flock -n 9 || exit 0
+
+variables=(WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_RUNTIME_DIR)
+for variable in DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE; do
+  [[ -n "${!variable:-}" ]] && variables+=("$variable")
+done
+[[ ! -e "$transaction_gate" && ! -L "$transaction_gate" ]] || exit 0
+timeout 3s "$systemctl_bin" --user import-environment "${variables[@]}"
+[[ ! -e "$transaction_gate" && ! -L "$transaction_gate" ]] || exit 0
+timeout 3s "$systemctl_bin" --user start xeneon-edge-input.path
+timeout 3s "$systemctl_bin" --user is-active --quiet xeneon-edge-input.path
+[[ ! -e "$transaction_gate" && ! -L "$transaction_gate" ]] || exit 0
+# Do not wait for the oneshot's hardware inventory or start an app directly.
+# The reconciler remains the exact, active-display and per-device authority.
+timeout 3s "$systemctl_bin" --user --no-block start xeneon-edge-reconcile.service
