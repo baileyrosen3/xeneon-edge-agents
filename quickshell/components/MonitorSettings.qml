@@ -183,8 +183,10 @@ Item {
                         font.weight: Font.Bold
                     }
                     Text {
+                        width: parent.width
                         text: root.previewMode ? "SYNTHETIC PREVIEW · HARDWARE WRITES DISABLED" : root.live ? "EXACT EDGE IDENTITY VERIFIED · DIRECT DDC CONTROL" : String(root.monitor.reason || "Hardware discovery has not completed")
                         textFormat: Text.PlainText
+                        elide: Text.ElideRight
                         color: root.live ? root.theme.accent : root.theme.needsHelp
                         font.pixelSize: 15
                     }
@@ -241,7 +243,7 @@ Item {
                         }
                         Text {
                             width: parent.width
-                            text: { root.clockTick; return root.monitor.refreshed_at_ms ? "Read " + Math.max(0, Math.floor((Date.now() - Number(root.monitor.refreshed_at_ms)) / 1000)) + "s ago" : "No successful hardware observation yet" }
+                            text: { root.clockTick; return root.monitor.refreshed_at_ms ? (root.monitor.available ? "Read " : "Checked ") + Math.max(0, Math.floor((Date.now() - Number(root.monitor.refreshed_at_ms)) / 1000)) + "s ago" : "No hardware check yet" }
                             textFormat: Text.PlainText
                             color: root.theme.textMuted
                             font.pixelSize: 15
