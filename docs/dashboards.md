@@ -78,6 +78,15 @@ exact identity record. This controller replaces the legacy commissioning
 record or touchscreen/display configuration. Hardware values and capability
 availability are runtime data, not theme constants.
 
+Optional `read_sleep_multiplier` is an explicit, host-tested read timing profile
+from 0.25 through 1.0; omitted keeps native defaults. A complete normal probe
+must establish the actual MCCS version before the faster initialization path is
+used. That proof is tied to the freshly identified device and expires after
+60 seconds without extension by fast reads. Range and RGB preset checks still
+read the hardware for each write. Writes keep normal fixed timing, verification,
+and independent readback; a failed operation invalidates the proof. Periodic
+read-only probes yield to a queued slider write.
+
 ## Agents
 
 The existing Herdr/T3 Code roster, attention states, usage displays, voice
