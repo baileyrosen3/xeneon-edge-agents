@@ -39,7 +39,7 @@ Item {
         scale: root.viewportScale
         transformOrigin: Item.TopLeft
 
-        PortalView {
+        DashboardView {
             anchors.fill: parent
             store: root.store
             bridge: root.bridge

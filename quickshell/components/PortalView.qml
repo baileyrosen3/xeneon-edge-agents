@@ -14,9 +14,10 @@ Item {
     property bool previewMode: false
     property bool restoreVoiceFocus: false
     property bool previewMicroOpen: false
+    property bool compactLayout: false
     property string hostName: "LOCAL"
 
-    readonly property int pageSize: 14
+    readonly property int pageSize: compactLayout ? 10 : 14
     readonly property int pageCount: Math.max(
         1,
         Math.ceil(store.agents.length / pageSize)
@@ -378,7 +379,7 @@ Item {
             leftMargin: 34
             rightMargin: 34
         }
-        height: 92
+        height: root.compactLayout ? 112 : 92
         opacity: ambientView.controlCenterProgress
 
         transform: Translate {
@@ -391,6 +392,7 @@ Item {
             anchors {
                 left: parent.left
                 verticalCenter: parent.verticalCenter
+                verticalCenterOffset: root.compactLayout ? -24 : 0
             }
             spacing: 18
 
@@ -434,9 +436,10 @@ Item {
             id: headerActions
             objectName: "headerActions"
             anchors {
-                left: headerIdentity.right
-                leftMargin: 44
+                left: root.compactLayout ? parent.left : headerIdentity.right
+                leftMargin: root.compactLayout ? 0 : 44
                 verticalCenter: parent.verticalCenter
+                verticalCenterOffset: root.compactLayout ? 28 : 0
             }
             spacing: 12
 
@@ -619,7 +622,9 @@ Item {
             id: pageDots
             objectName: "pageDots"
 
-            anchors.centerIn: parent
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.verticalCenterOffset: root.compactLayout ? 28 : 0
             spacing: 12
 
             visible: root.pageCount > 1
@@ -677,6 +682,7 @@ Item {
                 right: parent.right
                 verticalCenter: parent.verticalCenter
                 rightMargin: displaySettings.width + 16
+                verticalCenterOffset: root.compactLayout ? -24 : 0
             }
             spacing: 12
 

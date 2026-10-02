@@ -125,6 +125,7 @@ ShellRoot {
             category: "display"
             property bool reduceMotion: false
             property bool dimmed: false
+            property int dashboardIndex: 0
             property string readyColorRole: "muted"
             property string successColorRole: "green"
             property string workingColorRole: "blue"
