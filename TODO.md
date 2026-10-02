@@ -670,26 +670,38 @@ verification, installation, and the live handoff.
   are source/fixture results, not a claim of successful physical boot or touch
   verification.
 
-### Startup install attempt · 2026-10-02 (13:40)
+### Startup install · 2026-10-02 (13:44)
 
-- Re-ran the gates from the moved clone: 13 startup fixtures, 31 installer/Lua
-  lifecycle scenarios, `luac -p` on the generated module through those
-  scenarios, and ShellCheck 0.11.0 on the helper, reconciler, installer, and
-  checker.
+- Gates re-run from the moved clone: 13 startup fixtures, 31 installer/Lua
+  lifecycle scenarios (including `luac -p` on the generated module), and
+  ShellCheck 0.11.0 on the helper, reconciler, installer, and checker.
 - Live helper smoke against the real session sockets with a stubbed systemctl:
   the ordered `import-environment` -> `start xeneon-edge-input.path` ->
   `is-active` -> `--no-block start xeneon-edge-reconcile.service` sequence
-  exits 0; a failing watcher check exits 1 before queueing reconciliation; the
-  live transaction gate makes it exit 0 without any call. No service was
-  started or changed by these runs.
-- Live `scripts/check.sh` reports the exact production output identity (DP-2)
-  and the Hyprland serial/model as OK, but the configured Hyprland touch
-  device and the USB touchscreen identity are absent, so production
-  commissioning fails closed and nothing installed. The EDGE video link is up
-  at 2560x720 while its USB touchscreen is unplugged, which matches the boot
-  log's repeated `5-1.4` disconnects.
-- The installed tree still carries the pre-`b14f5e7` module and reconciler and
-  has no `xeneon-edge-session`; that is expected until the commissioned
-  touchscreen is present. The `/run/user/1000/xeneon-edge-agents-uninstalling`
-  diagnostic pause file is still in place, so the paused state is unchanged.
-  Do not claim installed acceptance for this checkpoint.
+  exits 0; a failing watcher check exits 1 before queueing reconciliation; a
+  held transaction gate makes it exit 0 with no call. No service was started
+  or changed by those runs.
+- The first live attempt failed closed exactly as designed: while the EDGE USB
+  upstream was unplugged, `scripts/check.sh` reported the Hyprland touch
+  device and USB touchscreen identity absent and no file was changed.
+- After the touchscreen returned, the reviewed install ran with the exact
+  commissioned identity and `--activate`. The user's `config.toml` carries
+  `[trading]` and `[monitor]` sections the production render does not, and the
+  installer refuses to overwrite or claim a pre-existing user config, so the
+  file was moved aside for the install and restored byte-identically
+  afterwards (`53c106ec…`, mode `0600`); trading credentials and portal
+  preferences were untouched.
+- Live result: `scripts/check.sh` passes with no findings; the installed
+  session helper, reconciler, and generated Hyprland module match source
+  exactly; `hyprctl configerrors` is empty. The user manager now carries
+  `HYPRLAND_INSTANCE_SIGNATURE` and `WAYLAND_DISPLAY`, so
+  `xeneon-edge-input.path` is active instead of condition-skipped, the
+  reconciler finished with `state=running` / "verified DP-2 and exact
+  touchscreen", and daemon plus portal are active on a Herdr session with three
+  real agents. The only `xeneon-edge-agent-portal` layer is on DP-2 at
+  1024x288 logical (2560x720 at 2.5 scale).
+- Not yet proven: a real cold boot, unplug/replug, suspend/resume, touch
+  coordinates, and the disabled-output path on this physical unit. Kernel link
+  failures on the EDGE output (`enabling link 2 failed`) were 3-6 per minute
+  while the stack was running before the pause and 0 in the five minutes after
+  this activation; treat that as observation, not a hardware verdict.
