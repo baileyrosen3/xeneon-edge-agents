@@ -3,9 +3,11 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 
+use crate::monitor::{MonitorConfig, MonitorControlId, MonitorController, MonitorSnapshot};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -70,7 +72,7 @@ impl Default for EdgeBrightnessSnapshot {
         Self {
             available: false,
             percent: None,
-            reason: Some("Exact XENEON DDC identity and restoration are unverified".into()),
+            reason: Some("Monitor capabilities have not been read".into()),
         }
     }
 }
@@ -90,6 +92,8 @@ pub struct OmarchySnapshot {
     pub storage: Vec<StorageView>,
     pub processes: Vec<ProcessView>,
     pub edge_brightness: EdgeBrightnessSnapshot,
+    #[serde(default)]
+    pub monitor: MonitorSnapshot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,11 +108,21 @@ pub enum MediaCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OmarchyRequest {
-    Volume { percent: u8 },
-    Mute { muted: bool },
-    MicrophoneMute { muted: bool },
-    Output { id: u32 },
-    Media { command: MediaCommand },
+    Volume {
+        percent: u8,
+    },
+    Mute {
+        muted: bool,
+    },
+    MicrophoneMute {
+        muted: bool,
+    },
+    Output {
+        id: u32,
+    },
+    Media {
+        command: MediaCommand,
+    },
     ToggleDnd {},
     ToggleKeepawake {},
     ToggleNightlight {},
@@ -116,9 +130,20 @@ pub enum OmarchyRequest {
     StartRecording {},
     StopRecording {},
     Lock {},
-    SetTheme { name: String },
-    SetPowerProfile { profile: String },
-    EdgeBrightness { percent: u8 },
+    SetTheme {
+        name: String,
+    },
+    SetPowerProfile {
+        profile: String,
+    },
+    EdgeBrightness {
+        percent: u8,
+    },
+    MonitorRefresh {},
+    MonitorSet {
+        control: MonitorControlId,
+        value: u16,
+    },
 }
 
 #[derive(Debug)]
@@ -126,6 +151,32 @@ pub struct OmarchyController {
     home: PathBuf,
     proc_root: PathBuf,
     previous_processes: Option<(u64, HashMap<u32, ProcessCounters>)>,
+    monitor: Arc<MonitorController>,
+}
+
+pub(crate) fn brightness_projection(monitor: &MonitorSnapshot) -> EdgeBrightnessSnapshot {
+    let control = monitor
+        .controls
+        .iter()
+        .find(|v| v.id == MonitorControlId::Brightness);
+    let available = monitor.available
+        && monitor.identity_verified
+        && control.is_some_and(|v| v.supported && v.writable);
+    let percent = control
+        .and_then(|v| v.current.zip(v.maximum))
+        .filter(|(_, max)| *max > 0)
+        .map(|(current, maximum)| u32::from(current) * 100 / u32::from(maximum));
+    EdgeBrightnessSnapshot {
+        available,
+        percent,
+        reason: if available {
+            None
+        } else {
+            control
+                .and_then(|v| v.reason.clone())
+                .or_else(|| monitor.reason.clone())
+        },
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -142,11 +193,19 @@ impl Default for OmarchyController {
                 .unwrap_or_default(),
             proc_root: "/proc".into(),
             previous_processes: None,
+            monitor: Arc::new(MonitorController::new(MonitorConfig::default())),
         }
     }
 }
 
 impl OmarchyController {
+    pub fn with_monitor(monitor: Arc<MonitorController>) -> Self {
+        Self {
+            monitor,
+            ..Self::default()
+        }
+    }
+
     pub async fn sample(&mut self) -> OmarchySnapshot {
         let (audio, media, dnd, idle, nightlight, recording, themes, profile, profiles, storage) = tokio::join!(
             sample_audio(),
@@ -164,6 +223,8 @@ impl OmarchyController {
             fs::read_to_string(self.home.join(".local/state/omarchy/current/theme.name"))
                 .ok()
                 .and_then(|name| theme_slug(name.trim()));
+        let monitor = self.monitor.snapshot().await;
+        let edge_brightness = brightness_projection(&monitor);
         OmarchySnapshot {
             audio,
             media,
@@ -181,11 +242,22 @@ impl OmarchyController {
                 .map_or_else(Vec::new, |value| parse_profiles(&value)),
             storage,
             processes: self.sample_processes(),
-            edge_brightness: EdgeBrightnessSnapshot::default(),
+            edge_brightness,
+            monitor,
         }
     }
 
-    pub async fn perform(&self, request: &OmarchyRequest) -> Result<()> {
+    pub async fn perform(&self, request: &OmarchyRequest) -> Result<String> {
+        match request {
+            OmarchyRequest::MonitorRefresh {} => return self.monitor.refresh().await,
+            OmarchyRequest::MonitorSet { control, value } => {
+                return self.monitor.set(*control, *value).await;
+            }
+            OmarchyRequest::EdgeBrightness { percent } => {
+                return self.monitor.brightness_percent(*percent).await;
+            }
+            _ => {}
+        }
         // Fresh probes constrain dynamic IDs/names at the daemon boundary. No
         // QML-provided executable, argument vector, shell text, or bus name is used.
         let context = match request {
@@ -227,7 +299,7 @@ impl OmarchyController {
         if !status.success() {
             bail!("desktop control failed with exit status {status}");
         }
-        Ok(())
+        Ok("Desktop control completed".into())
     }
 
     fn sample_processes(&mut self) -> Vec<ProcessView> {
@@ -408,8 +480,10 @@ fn action_spec(request: &OmarchyRequest, current: &OmarchySnapshot) -> Result<Co
             }
             specification("powerprofilesctl", &["set", profile])
         }
-        OmarchyRequest::EdgeBrightness { .. } => {
-            bail!("exact XENEON DDC identity and restoration are unverified")
+        OmarchyRequest::EdgeBrightness { .. }
+        | OmarchyRequest::MonitorRefresh {}
+        | OmarchyRequest::MonitorSet { .. } => {
+            bail!("monitor actions require the exact DDC controller")
         }
     })
 }
@@ -1010,6 +1084,7 @@ mod tests {
             home: root.path().into(),
             proc_root: root.path().into(),
             previous_processes: None,
+            ..OmarchyController::default()
         };
         assert!(controller.sample_processes().is_empty());
         fs::write(root.path().join("stat"), "cpu  120 0 0 980 0 0 0 0 80 0\n").unwrap();

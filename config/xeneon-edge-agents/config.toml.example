@@ -34,3 +34,11 @@ execution_enabled = false
 # A private file containing only DATA_SERVER_URL and DATA_SERVER_TOKEN.
 # Use an absolute path; keep this file mode 0600 and outside Git.
 # credentials_file = "/home/user/.config/xeneon-edge-agents/gateway.env"
+
+[monitor]
+# Reads require the exact production commissioning identity and its nested I2C bus.
+enabled = true
+# Explicit user opt-in after reviewed installation; never inherited from legacy DDC flags.
+writes_enabled = false
+refresh_ms = 30000
+# commissioning_file = "/absolute/path/to/xeneon-edge-agents/commissioning.toml"

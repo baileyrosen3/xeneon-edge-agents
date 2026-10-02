@@ -4,6 +4,7 @@ pub mod health;
 pub mod herdr;
 pub mod micro;
 pub mod model;
+pub mod monitor;
 pub mod omarchy;
 pub mod protocol;
 pub mod runtime;

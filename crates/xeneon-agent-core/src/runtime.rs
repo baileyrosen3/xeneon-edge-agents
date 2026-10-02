@@ -165,6 +165,7 @@ pub struct DaemonRuntime {
     voice: Arc<Mutex<VoiceController>>,
     order_operation: Arc<Mutex<()>>,
     omarchy: Arc<Mutex<OmarchyController>>,
+    monitor: Arc<crate::monitor::MonitorController>,
     trading: TradingController,
     updates: watch::Sender<String>,
     invalidations: mpsc::Sender<String>,
@@ -204,6 +205,9 @@ impl DaemonRuntime {
         let voice = VoiceController::from_config(&config, snapshot.daemon_epoch.clone())?;
         let t3code = T3codeClient::from_config(config.t3code.home.as_deref())?;
         let trading = TradingController::new(config.trading.clone());
+        let monitor = Arc::new(crate::monitor::MonitorController::new(
+            config.monitor.clone(),
+        ));
         Ok((
             Self {
                 herdr: HerdrClient::new(config.herdr_bin.clone()),
@@ -224,7 +228,8 @@ impl DaemonRuntime {
                 desktop: Arc::new(desktop),
                 voice: Arc::new(Mutex::new(voice)),
                 order_operation: Arc::new(Mutex::new(())),
-                omarchy: Arc::new(Mutex::new(OmarchyController::default())),
+                omarchy: Arc::new(Mutex::new(OmarchyController::with_monitor(monitor.clone()))),
+                monitor,
                 trading,
                 updates,
                 invalidations,
@@ -258,8 +263,16 @@ impl DaemonRuntime {
         let mut trading_collector = tokio::spawn(async move {
             trading_runtime.collect_trading_loop().await;
         });
+        let monitor_runtime = self.clone();
+        let mut monitor_collector = tokio::spawn(async move {
+            monitor_runtime.collect_monitor_loop().await;
+        });
         loop {
             tokio::select! {
+                result = &mut monitor_collector => {
+                    result.context("joining monitor control collector")?;
+                    bail!("monitor control collector stopped unexpectedly");
+                }
                 result = &mut dashboard_collector => {
                     result.context("joining desktop dashboard collector")?;
                     bail!("desktop dashboard collector stopped unexpectedly");
@@ -304,6 +317,30 @@ impl DaemonRuntime {
             state.snapshot.generated_at_ms = now_ms();
             drop(state);
             self.publish().await;
+        }
+    }
+
+    async fn publish_monitor(&self) {
+        let sample = self.monitor.snapshot().await;
+        let mut state = self.state.write().await;
+        state.snapshot.omarchy.edge_brightness = crate::omarchy::brightness_projection(&sample);
+        state.snapshot.omarchy.monitor = sample;
+        state.snapshot.generated_at_ms = now_ms();
+        drop(state);
+        self.publish().await;
+    }
+
+    async fn collect_monitor_loop(&self) {
+        let mut timer = interval(self.monitor.refresh_interval());
+        timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = timer.tick() => {},
+                _ = self.monitor.wait_for_refresh() => {},
+            }
+            // Slow DDC discovery never holds the desktop or PC-health collector.
+            let _ = self.monitor.refresh().await;
+            self.publish_monitor().await;
         }
     }
 
@@ -806,9 +843,17 @@ impl DaemonRuntime {
         let initial = updates.borrow().clone();
         write.write_all(initial.as_bytes()).await?;
         write.write_all(b"\n").await?;
+        let mut pending_monitor: Option<tokio::task::JoinHandle<ActionResult>> = None;
 
         loop {
             tokio::select! {
+                result = async { pending_monitor.as_mut().unwrap().await }, if pending_monitor.is_some() => {
+                    let result = result.context("joining accepted monitor command")?;
+                    pending_monitor = None;
+                    write.write_all(serde_json::to_string(&ServerMessage::ActionResult { result })?.as_bytes()).await?;
+                    write.write_all(b"\n").await?;
+                    write.flush().await?;
+                }
                 changed = updates.changed() => {
                     changed.context("snapshot publisher closed")?;
                     let next = updates.borrow_and_update().clone();
@@ -816,10 +861,27 @@ impl DaemonRuntime {
                     write.write_all(b"\n").await?;
                     write.flush().await?;
                 }
-                line = lines.next_line() => {
+                line = lines.next_line(), if pending_monitor.is_none() => {
                     let Some(line) = line? else {
                         return Ok(());
                     };
+                    let monitor_request = serde_json::from_str::<PortalCommand>(&line).ok()
+                        .filter(|command| command.action == ActionKind::Omarchy)
+                        .and_then(|command| command.parameters)
+                        .and_then(|parameters| serde_json::from_value::<OmarchyRequest>(parameters).ok())
+                        .is_some_and(|request| matches!(request,
+                            OmarchyRequest::MonitorRefresh {} | OmarchyRequest::MonitorSet { .. } | OmarchyRequest::EdgeBrightness { .. }));
+                    if monitor_request {
+                        let runtime = self.clone();
+                        // Keep updates flowing, but accept no second command
+                        // until this verdict. A started write completes its
+                        // readback if the client disappears; dropping this
+                        // JoinHandle never aborts or retries that operation.
+                        pending_monitor = Some(tokio::spawn(async move {
+                            runtime.process_command(&line, client_id).await
+                        }));
+                        continue;
+                    }
                     let result = self.process_command(&line, client_id).await;
                     write.write_all(serde_json::to_string(&ServerMessage::ActionResult { result })?.as_bytes()).await?;
                     write.write_all(b"\n").await?;
@@ -855,8 +917,19 @@ impl DaemonRuntime {
                         );
                     }
                 };
-            return match self.omarchy.lock().await.perform(&request).await {
-                Ok(()) => action_ok(&command.request_id, "desktop_action_completed"),
+            let result = match &request {
+                OmarchyRequest::MonitorRefresh {} => self.monitor.refresh().await,
+                OmarchyRequest::MonitorSet { control, value } => {
+                    self.monitor.set(*control, *value).await
+                }
+                OmarchyRequest::EdgeBrightness { percent } => {
+                    self.monitor.brightness_percent(*percent).await
+                }
+                _ => self.omarchy.lock().await.perform(&request).await,
+            };
+            self.publish_monitor().await;
+            return match result {
+                Ok(message) => action_ok(&command.request_id, message),
                 Err(error) => action_error(
                     &command.request_id,
                     "desktop_action_failed",
@@ -2695,6 +2768,10 @@ mod tests {
                 home: Some(temp.path().join("empty-t3")),
                 ..Default::default()
             },
+            monitor: crate::monitor::MonitorConfig {
+                enabled: false,
+                ..Default::default()
+            },
             ..Default::default()
         })
         .unwrap();
@@ -2760,5 +2837,192 @@ mod tests {
         assert_eq!(verdict["code"], "trading_rejected");
         assert!(!daemon.is_finished());
         daemon.abort();
+    }
+    #[tokio::test]
+    async fn blocked_monitor_action_does_not_serialize_desktop_or_health_projection() {
+        let (runtime, _) = DaemonRuntime::new(Config {
+            monitor: crate::monitor::MonitorConfig {
+                writes_enabled: true,
+                ..Default::default()
+            },
+            ..Config::default()
+        })
+        .unwrap();
+        let operation = runtime.monitor.hold_operation_for_test().await;
+        let acting = runtime.clone();
+        let command = serde_json::to_string(&PortalCommand {
+            schema_version: SCHEMA_VERSION,
+            request_id: "blocked-ddc".into(),
+            sequence: 0,
+            agent_id: None,
+            action: ActionKind::Omarchy,
+            capability_id: None,
+            parameters: Some(serde_json::json!({
+                "operation":"monitor_set","control":"brightness","value":94
+            })),
+        })
+        .unwrap();
+        let action =
+            tokio::spawn(async move { acting.process_command(&command, Uuid::new_v4()).await });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !action.is_finished(),
+            "monitor operation should be waiting on its own I2C lock"
+        );
+        let desktop = tokio::time::timeout(Duration::from_millis(200), runtime.omarchy.lock())
+            .await
+            .expect("DDC action must not own the desktop collector mutex");
+        drop(desktop);
+        tokio::time::timeout(Duration::from_millis(200), runtime.monitor.snapshot())
+            .await
+            .expect("cached projection must not wait on DDC");
+        tokio::time::timeout(Duration::from_millis(200), async {
+            let mut state = runtime.state.write().await;
+            state.snapshot.generated_at_ms = now_ms();
+            drop(state);
+            runtime.publish().await;
+        })
+        .await
+        .expect("health/projection publication must remain available while DDC is blocked");
+        action.abort();
+        let _ = action.await;
+        drop(operation);
+    }
+
+    #[tokio::test]
+    async fn subscribed_snapshots_continue_during_a_blocked_monitor_command() {
+        let temp = tempfile::tempdir().unwrap();
+        let (runtime, _) = DaemonRuntime::new(Config {
+            monitor: crate::monitor::MonitorConfig {
+                writes_enabled: true,
+                commissioning_file: Some(temp.path().join("absent-commissioning.toml")),
+                ..Default::default()
+            },
+            ..Config::default()
+        })
+        .unwrap();
+        let operation = runtime.monitor.hold_operation_for_test().await;
+        let (client, server) = UnixStream::pair().unwrap();
+        let serving = runtime.clone();
+        let handler =
+            tokio::spawn(async move { serving.handle_client_inner(server, Uuid::new_v4()).await });
+        let (read, mut write) = client.into_split();
+        let mut lines = BufReader::new(read).lines();
+        lines.next_line().await.unwrap().unwrap();
+        let command = PortalCommand {
+            schema_version: SCHEMA_VERSION,
+            request_id: "streaming-ddc".into(),
+            sequence: 0,
+            agent_id: None,
+            action: ActionKind::Omarchy,
+            capability_id: None,
+            parameters: Some(serde_json::json!({
+                "operation":"monitor_set","control":"brightness","value":94
+            })),
+        };
+        write
+            .write_all(format!("{}\n", serde_json::to_string(&command).unwrap()).as_bytes())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        runtime.state.write().await.snapshot.generated_at_ms = 123_456;
+        runtime.publish().await;
+        let update = tokio::time::timeout(Duration::from_millis(250), lines.next_line())
+            .await
+            .expect("Subscribing client must receive snapshots while its DDC action is blocked")
+            .unwrap()
+            .unwrap();
+        let update: serde_json::Value = serde_json::from_str(&update).unwrap();
+        assert_eq!(update["type"], "snapshot");
+        assert_eq!(update["generated_at_ms"], 123_456);
+        // Releasing the fixture lock only reaches an absent commissioning
+        // record; this test can never invoke a real hardware command.
+        drop(operation);
+        let verdict = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let line = lines.next_line().await.unwrap().unwrap();
+                let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+                if message["type"] == "action_result" {
+                    break message;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(verdict["request_id"], "streaming-ddc");
+        assert_eq!(verdict["ok"], false);
+        drop(write);
+        drop(lines);
+        tokio::time::timeout(Duration::from_secs(1), handler)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn accepted_monitor_command_finishes_after_subscriber_disconnects() {
+        let temp = tempfile::tempdir().unwrap();
+        let (runtime, _) = DaemonRuntime::new(Config {
+            monitor: crate::monitor::MonitorConfig {
+                writes_enabled: true,
+                commissioning_file: Some(temp.path().join("absent-commissioning.toml")),
+                ..Default::default()
+            },
+            ..Config::default()
+        })
+        .unwrap();
+        let operation = runtime.monitor.hold_operation_for_test().await;
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let serving = runtime.clone();
+        let handler =
+            tokio::spawn(async move { serving.handle_client_inner(server, Uuid::new_v4()).await });
+        let command = PortalCommand {
+            schema_version: SCHEMA_VERSION,
+            request_id: "disconnected-ddc".into(),
+            sequence: 0,
+            agent_id: None,
+            action: ActionKind::Omarchy,
+            capability_id: None,
+            parameters: Some(serde_json::json!({
+                "operation":"monitor_set","control":"brightness","value":94
+            })),
+        };
+        client
+            .write_all(format!("{}\n", serde_json::to_string(&command).unwrap()).as_bytes())
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        drop(client);
+        runtime.publish().await;
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), handler)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        // The pending task outlives the socket writer. Releasing the fixture
+        // lock reaches only a missing commissioning record, never hardware.
+        drop(operation);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let snapshot = runtime.monitor.snapshot().await;
+                if snapshot.refreshed_at_ms > 0 {
+                    assert!(
+                        snapshot
+                            .reason
+                            .unwrap()
+                            .contains("commissioning record is unavailable")
+                    );
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect(
+            "Accepted monitor operation must complete instead of being cancelled with the socket",
+        );
     }
 }
