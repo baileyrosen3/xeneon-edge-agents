@@ -40,13 +40,20 @@ controls remain visible with their reason. The EDGE tested here exposes no
 independent DDC backlight control, so that row stays disabled. Dashboard dimming
 is a software overlay and is not a hardware backlight setting.
 
-Dragging a hardware slider edits its local draft and sends one request on
-release. Tapping its reported value opens an integer touch keypad with an Apply
-button. Presets use only advertised values and names; RGB availability follows
-the backend's writable flags for the active preset. A write remains pending
-until a successful result and a newer matching hardware readback arrive. An
-error or timeout requires an explicit hardware refresh before another write;
-the UI never resends the previous request.
+Dragging a hardware slider immediately shows its selected target and starts a
+live adjustment. The confirmed hardware value stays visible separately. At most
+one command is in flight, with one replaceable target per continuous control;
+unique controls are served in order and sends are spaced at least 100 ms apart.
+Releasing retains the final target without duplicating an in-flight or confirmed
+value. Closing the menu lets already-entered targets finish. Presets and refresh
+wait until adjustments finish. Tapping a reported value opens the integer touch
+keypad with an Apply button when the hardware is idle.
+
+Presets use only advertised values and names; RGB availability follows the
+backend's writable flags for the active preset. A write remains pending until a
+successful result and a newer matching hardware readback arrive. An error,
+timeout, disconnect, or identity change discards unissued targets and requires
+an explicit hardware refresh before another write; the UI never replays them.
 
 The typed operations are `monitor_refresh` and
 `{"operation":"monitor_set","control":"contrast","value":50}`. The daemon
@@ -169,7 +176,7 @@ The source customization points are:
 | `quickshell/components/OmarchyControls.qml` | Desktop dashboard content |
 | `quickshell/components/MonitorSettings.qml` | Global hardware overlay, pending/readback state, and touch keypad |
 | `quickshell/components/MonitorControl.qml` | Capability-driven hardware value and slider card |
-| `quickshell/components/MonitorSlider.qml` | Raw-unit touch slider that commits on release |
+| `quickshell/components/MonitorSlider.qml` | Raw-unit touch slider with live target updates |
 | `quickshell/components/RiptideDashboard.qml` | Trading layout, ticket, and review flow |
 | `quickshell/state/PortalStore.qml` | Bounded UI normalization and full replacement state |
 | `quickshell/state/PortalBridge.qml` | Typed transport and preview restrictions |
@@ -201,7 +208,9 @@ no daemon/process is started by that test. Runtime socket tests separately
 exercise the real Rust transport.
 
 `quickshell/tests/tst_monitor_settings.qml` covers dynamic hardware ranges,
-unsupported controls, release-only writes, snapshots arriving during a drag,
+unsupported controls, leading/coalesced writes, fair final targets across
+controls, closing during adjustment, disconnect/error queue cancellation,
+snapshots during a drag,
 readback/result ordering, explicit recovery after errors, integer keypad bounds,
 and preview/stale/unverified actions producing no dispatch. Its exported image
 is a synthetic fixture, not a live hardware acceptance test.

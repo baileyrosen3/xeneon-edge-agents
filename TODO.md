@@ -575,3 +575,20 @@ verification, installation, and the live handoff.
   `outputs/monitor-settings-live.png`. The EDGE has exactly one portal layer,
   other outputs have none, and no LG preview was created. Physical finger-touch,
   hotplug, DPMS, and suspend acceptance remain separate tests.
+
+## Responsive monitor adjustments — source stage
+
+- Sliders dispatch during drag with immediate SET feedback and a separate
+  confirmed READ value. One command is in flight; one latest target per
+  continuous control is served through a unique FIFO, at least 100 ms between
+  sends. Released targets survive closing the menu, and matching in-flight or
+  confirmed targets are not sent twice. Presets and refresh wait for idle.
+- Errors, rejected sends, timeouts, disconnects, and changed capabilities drop
+  all unissued targets and require explicit refresh. No previous mutation is
+  replayed. Backend review approves the QML scheduler and target/read display.
+- Source checks pass 157 Qt tests, 28 Python contracts, changed QML lint, and
+  diff checks. An independent focused monitor run passes all 19 cases.
+- Native latency optimization, reviewed release installation, and acceptance
+  are pending. The user's latest hardware brightness is 100, not the former
+  95 acceptance baseline; any native test must capture and preserve current
+  user values. No hardware writes were made by the UI implementation agent.

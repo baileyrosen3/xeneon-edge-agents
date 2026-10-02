@@ -21,7 +21,9 @@ TestCase {
         property bool ready: true
         property int requests: 0
         property var lastPayload: ({})
-        function omarchyAction(payload) { requests += 1; lastPayload = payload; return "monitor-" + requests }
+        property var payloads: []
+        property bool rejectSend: false
+        function omarchyAction(payload) { if (rejectSend) return ""; requests += 1; lastPayload = payload; payloads = payloads.concat([payload]); return "monitor-" + requests }
     }
     QtObject { id: activity; function noteUserActivity() {} }
     PortalStore { id: normalizer }
@@ -56,18 +58,21 @@ TestCase {
     function init() {
         panel.finishFeedback(false, "")
         panel.needsRefresh = false
+        panel.lastSentAt = 0
         panel.keypadControl = ""
         panel.previewMode = false
         panel.open = true
         store.freshSnapshotRequired = false
         bridge.ready = true
         bridge.requests = 0
+        bridge.payloads = []
+        bridge.rejectSend = false
         store.omarchy = {monitor:fixture()}
         wait(0)
     }
     function updated(id, value) {
-        var next = fixture()
-        next.refreshed_at_ms = store.omarchy.monitor.refreshed_at_ms + 1
+        var next = JSON.parse(JSON.stringify(store.omarchy.monitor))
+        next.refreshed_at_ms = Math.max(Date.now(), store.omarchy.monitor.refreshed_at_ms + 1)
         for (var i=0;i<next.controls.length;++i) if (next.controls[i].id === id) next.controls[i].current = value
         store.omarchy = {monitor:next}
     }
@@ -83,23 +88,135 @@ TestCase {
         verify(!panel.requestSet("contrast",50.5))
         compare(bridge.requests,0)
     }
-    function test_sliderCommitsOnlyOnReleaseAndSurvivesHealthSnapshot() {
+    function confirm(id, value, requestNumber) {
+        updated(id, value)
+        store.actionResultReceived({request_id:"monitor-" + requestNumber,ok:true})
+    }
+    function test_sliderLeadingWriteCoalescesDuringHealthSnapshot() {
         var slider = findChild(panel,"monitorSlider_brightness")
         var area = findChild(slider,"monitorSliderTouchArea")
         mousePress(area,area.width*.5,24)
+        compare(bridge.requests,1)
+        var firstValue = bridge.lastPayload.value
         mouseMove(area,area.width*.7,24,20)
-        compare(bridge.requests,0)
+        compare(bridge.requests,1)
+        verify(panel.currentDraft(panel.control("brightness"))>65)
+        compare(panel.control("brightness").current,95)
+        var chip = findChild(panel,"monitorNumeric_brightness")
+        verify(chip.label.indexOf("SET ")===0)
+        compare(chip.detail,"READ 95/100")
         var replacement = fixture()
         replacement.refreshed_at_ms = store.omarchy.monitor.refreshed_at_ms
         store.omarchy = {monitor:replacement}
         wait(0)
-        compare(findChild(panel,"monitorSliderTouchArea") !== null,true)
         verify(slider.dragging)
+        verify(slider.enabled)
         mouseRelease(area,area.width*.7,24)
         compare(bridge.requests,1)
-        compare(bridge.lastPayload.operation,"monitor_set")
+        var finalValue = panel.queuedValues.brightness
+        confirm("brightness",firstValue,1)
+        tryCompare(bridge,"requests",2,250)
+        compare(bridge.lastPayload.value,finalValue)
+        confirm("brightness",finalValue,2)
+        wait(130)
+        compare(bridge.requests,2)
+        compare(panel.queuedControls.length,0)
+    }
+    function test_crossControlFinalTargetsAreFairAndBounded() {
+        verify(panel.requestSet("brightness",90))
+        verify(panel.requestSet("brightness",85))
+        verify(panel.requestSet("contrast",60))
+        for (var value=84;value>=80;--value) verify(panel.requestSet("brightness",value))
+        compare(bridge.requests,1)
+        compare(panel.queuedControls.length,2)
+        verify(!panel.requestSet("color_preset",5))
+        verify(!panel.refresh())
+        confirm("brightness",90,1)
+        tryCompare(bridge,"requests",2,250)
         compare(bridge.lastPayload.control,"brightness")
-        verify(bridge.lastPayload.value>65 && bridge.lastPayload.value<75)
+        compare(bridge.lastPayload.value,80)
+        panel.requestSet("brightness",70)
+        panel.requestSet("brightness",65)
+        confirm("brightness",80,2)
+        tryCompare(bridge,"requests",3,250)
+        compare(bridge.lastPayload.control,"contrast")
+        compare(bridge.lastPayload.value,60)
+        confirm("contrast",60,3)
+        tryCompare(bridge,"requests",4,250)
+        compare(bridge.lastPayload.control,"brightness")
+        compare(bridge.lastPayload.value,65)
+        confirm("brightness",65,4)
+        compare(panel.queuedControls.length,0)
+        wait(130)
+        compare(bridge.requests,4)
+    }
+    function test_throttleRetainsLatestAndReleaseDoesNotDuplicate() {
+        panel.lastSentAt = Date.now()
+        panel.requestSet("brightness",90)
+        panel.requestSet("brightness",80)
+        compare(bridge.requests,0)
+        wait(35)
+        compare(bridge.requests,0)
+        tryCompare(bridge,"requests",1,250)
+        compare(bridge.lastPayload.value,80)
+        panel.requestSet("brightness",80)
+        compare(panel.queuedControls.length,0)
+        confirm("brightness",80,1)
+        verify(!panel.requestSet("brightness",80))
+        wait(130)
+        compare(bridge.requests,1)
+    }
+    function test_closingMenuRetainsReleasedTargets() {
+        panel.requestSet("brightness",90)
+        panel.requestSet("contrast",60)
+        panel.open = false
+        confirm("brightness",90,1)
+        tryCompare(bridge,"requests",2,250)
+        compare(bridge.lastPayload.control,"contrast")
+        confirm("contrast",60,2)
+        compare(panel.pendingRequest,"")
+        compare(panel.queuedControls.length,0)
+    }
+    function test_disconnectDiscardsTargetsAndNeverReplays() {
+        panel.requestSet("brightness",90)
+        panel.requestSet("brightness",80)
+        panel.requestSet("contrast",60)
+        bridge.ready = false
+        verify(panel.needsRefresh)
+        compare(panel.pendingRequest,"")
+        compare(panel.queuedControls.length,0)
+        bridge.ready = true
+        updated("brightness",90)
+        store.actionResultReceived({request_id:"monitor-1",ok:true})
+        wait(130)
+        compare(bridge.requests,1)
+        verify(!panel.requestSet("brightness",80))
+    }
+    function test_capabilityChangeDiscardsOtherControlTarget() {
+        panel.requestSet("brightness",90)
+        panel.requestSet("red_gain",150)
+        var changed = JSON.parse(JSON.stringify(store.omarchy.monitor))
+        changed.refreshed_at_ms += 1
+        changed.controls[0].current = 90
+        changed.controls[3].writable = false
+        changed.controls[7].current = 5
+        store.omarchy = {monitor:changed}
+        store.actionResultReceived({request_id:"monitor-1",ok:true})
+        wait(130)
+        compare(bridge.requests,1)
+        compare(panel.queuedControls.length,0)
+        verify(panel.needsRefresh)
+    }
+    function test_rejectedDispatchDiscardsIntentAndRequiresRefresh() {
+        bridge.rejectSend = true
+        verify(!panel.requestSet("brightness",90))
+        verify(panel.needsRefresh)
+        compare(panel.queuedControls.length,0)
+        compare(panel.pendingRequest,"")
+        bridge.rejectSend = false
+        wait(130)
+        compare(bridge.requests,0)
+        verify(!panel.requestSet("brightness",80))
     }
     function test_successWaitsForFreshMatchingReadback() {
         verify(panel.requestSet("brightness",90))
@@ -122,7 +239,11 @@ TestCase {
     }
     function test_failedWriteRequiresExplicitRefreshNeverRetries() {
         verify(panel.requestSet("brightness",90))
-        store.actionResultReceived({request_id:"monitor-1",ok:false,message:"Identity no longer matches"})
+        panel.requestSet("brightness",80)
+        panel.requestSet("contrast",60)
+        store.actionResultReceived({request_id:"monitor-1",ok:false,code:"outcome_unknown",message:"Identity no longer matches"})
+        compare(panel.queuedControls.length,0)
+        wait(130)
         verify(panel.needsRefresh)
         verify(!panel.requestSet("brightness",80))
         compare(bridge.requests,1)
@@ -135,7 +256,10 @@ TestCase {
     }
     function test_timeoutRequiresExplicitRefreshWithoutResend() {
         verify(panel.requestSet("brightness",90))
+        panel.requestSet("brightness",80)
+        panel.requestSet("red_gain",150)
         findChild(panel,"monitorWriteDeadline").triggered()
+        compare(panel.queuedControls.length,0)
         verify(panel.needsRefresh)
         compare(panel.pendingRequest,"")
         updated("brightness",90)
@@ -177,6 +301,16 @@ TestCase {
         keypad.accepted("3")
         compare(bridge.requests,1)
         compare(bridge.lastPayload.value,3)
+    }
+    function test_exportLiveTargetFixtureScreenshot() {
+        panel.requestSet("brightness",90)
+        panel.requestSet("brightness",80)
+        wait(40)
+        var image=grabImage(testWindow.contentItem)
+        image.save("/tmp/edge-monitor-live-target-fixture.png")
+        verify(image.width>=2560)
+        compare(panel.control("brightness").current,95)
+        compare(bridge.requests,1)
     }
     function test_exportFixtureScreenshot() {
         panel.previewMode=true

@@ -13,7 +13,7 @@ Item {
     signal closeRequested
     readonly property var monitor: (store.omarchy || {}).monitor || ({})
     readonly property bool live: monitor.available === true && monitor.identity_verified === true && !store.freshSnapshotRequired && bridge.ready && !previewMode
-    readonly property bool canRefresh: bridge.ready && !store.freshSnapshotRequired && !previewMode && pendingRequest === "" && keypadControl === ""
+    readonly property bool canRefresh: bridge.ready && !store.freshSnapshotRequired && !previewMode && pendingRequest === "" && queuedControls.length === 0 && keypadControl === ""
     property string pendingRequest: ""
     property string pendingControl: ""
     property var pendingValue: null
@@ -23,6 +23,12 @@ Item {
     property string feedback: ""
     property bool feedbackSuccess: false
     property var drafts: ({})
+    // One command in flight; one replaceable target per continuous control.
+    // The unique FIFO keeps other released controls from starving behind a drag.
+    property var queuedControls: []
+    property var queuedValues: ({})
+    property double lastSentAt: 0
+    readonly property int adjustmentInterval: 100
     property double observedAt: 0
     property string keypadControl: ""
     property int clockTick: 0
@@ -49,19 +55,45 @@ Item {
         drafts = next
     }
     function writable(record) {
-        return live && !needsRefresh && pendingRequest === "" && keypadControl === "" && record.supported === true && record.writable === true
+        if (!live || needsRefresh || keypadControl !== "" || record.supported !== true || record.writable !== true) return false
+        if (record.kind === "enum") return pendingRequest === "" && queuedControls.length === 0
+        return pendingRequest === "" || pendingControl !== "" && control(pendingControl).kind === "continuous"
+    }
+    function validValue(record, numeric) {
+        if (!Number.isFinite(numeric) || Math.floor(numeric) !== numeric) return false
+        if (record.kind === "enum")
+            return (record.choices || []).some(function(choice) { return Number(choice.value) === numeric })
+        return record.current !== null && record.current !== undefined && record.maximum !== null && record.maximum !== undefined && numeric >= 0 && numeric <= Number(record.maximum)
+    }
+    function discardDraft(id) {
+        var next = Object.assign({}, drafts)
+        delete next[id]
+        drafts = next
+    }
+    function removeQueued(id) {
+        var next = Object.assign({}, queuedValues)
+        delete next[id]
+        queuedValues = next
+        queuedControls = queuedControls.filter(function(item) { return item !== id })
+    }
+    function clearQueued() {
+        adjustmentTimer.stop()
+        queuedValues = ({})
+        queuedControls = []
     }
     function send(payload, id, value) {
+        if (pendingRequest !== "") return false
         activity.noteUserActivity()
         var requestId = bridge.omarchyAction(payload)
         if (!requestId) {
-            feedback = "Could not send command. Check the daemon connection."
-            feedbackSuccess = false
+            needsRefresh = true
+            finishFeedback(false, "Could not send command. Refresh hardware after checking the daemon connection.")
             return false
         }
-        pendingRequest = String(requestId)
+        lastSentAt = Date.now()
         pendingControl = id
         pendingValue = value
+        pendingRequest = String(requestId)
         pendingObservation = Number(monitor.refreshed_at_ms || 0)
         acknowledged = false
         feedbackSuccess = false
@@ -73,19 +105,59 @@ Item {
         if (!canRefresh) return false
         return send({operation:"monitor_refresh"}, "", null)
     }
+    function dispatchQueued() {
+        if (pendingRequest !== "" || queuedControls.length === 0) return
+        if (!live || needsRefresh) { clearQueued(); drafts = ({}); return }
+        var remaining = adjustmentInterval - (Date.now() - lastSentAt)
+        if (remaining > 0) {
+            adjustmentTimer.interval = Math.ceil(remaining)
+            adjustmentTimer.restart()
+            return
+        }
+        while (queuedControls.length > 0) {
+            var id = queuedControls[0]
+            var numeric = Number(queuedValues[id])
+            var record = control(id)
+            removeQueued(id)
+            if (!writable(record) || !validValue(record, numeric)) {
+                needsRefresh = true
+                finishFeedback(false, "Hardware capability changed during adjustment. Refresh before another write.")
+                return
+            }
+            if (Number(record.current) === numeric) { discardDraft(id); continue }
+            send({operation:"monitor_set",control:id,value:numeric}, id, numeric)
+            return
+        }
+    }
     function requestSet(id, value) {
         var record = control(id)
         var numeric = Number(value)
-        if (!writable(record) || !Number.isFinite(numeric) || Math.floor(numeric) !== numeric) return false
+        if (!writable(record) || !validValue(record, numeric)) return false
+        setDraft(id, numeric)
         if (record.kind === "enum") {
-            if (!(record.choices || []).some(function(choice) { return Number(choice.value) === numeric })) return false
-        } else if (record.current === null || record.maximum === null || numeric < 0 || numeric > Number(record.maximum)) return false
-        if (Number(record.current) === numeric) { drafts = ({}); return false }
-        return send({operation:"monitor_set",control:id,value:numeric}, id, numeric)
+            if (Number(record.current) === numeric) { discardDraft(id); return false }
+            return send({operation:"monitor_set",control:id,value:numeric}, id, numeric)
+        }
+        if (pendingRequest !== "" && pendingControl === id && Number(pendingValue) === numeric) {
+            removeQueued(id)
+            return true
+        }
+        if (pendingRequest === "" && Number(record.current) === numeric) {
+            removeQueued(id)
+            discardDraft(id)
+            dispatchQueued()
+            return false
+        }
+        var next = Object.assign({}, queuedValues)
+        next[id] = numeric
+        queuedValues = next
+        if (queuedControls.indexOf(id) < 0) queuedControls = queuedControls.concat([id])
+        dispatchQueued()
+        return !needsRefresh
     }
     function editNumber(id) {
         var record = control(id)
-        if (!writable(record)) return
+        if (!writable(record) || pendingRequest !== "" || queuedControls.length > 0) return
         activity.noteUserActivity()
         keypadControl = id
         keypad.title = String(record.label).toUpperCase() + "  ·  0–" + record.maximum
@@ -94,13 +166,20 @@ Item {
     }
     function finishFeedback(success, message) {
         deadline.stop()
+        var completedControl = pendingControl
         pendingRequest = ""
         pendingControl = ""
         pendingValue = null
         acknowledged = false
         feedbackSuccess = success
         feedback = message
-        drafts = ({})
+        if (!success) {
+            clearQueued()
+            drafts = ({})
+        } else {
+            if (queuedValues[completedControl] === undefined) discardDraft(completedControl)
+            dispatchQueued()
+        }
     }
     function reconcile() {
         var sampled = Number(monitor.refreshed_at_ms || 0)
@@ -122,6 +201,12 @@ Item {
         observedAt = sampled
     }
     onMonitorChanged: reconcile()
+    onLiveChanged: {
+        if (!live && (pendingRequest !== "" || queuedControls.length > 0)) {
+            needsRefresh = true
+            finishFeedback(false, "Hardware connection or identity changed. Queued adjustments were discarded; refresh before another write.")
+        }
+    }
     Connections {
         target: root.store
         function onActionResultReceived(result) {
@@ -134,6 +219,12 @@ Item {
                 root.reconcile()
             }
         }
+    }
+    Timer {
+        id: adjustmentTimer
+        objectName: "monitorAdjustmentTimer"
+        interval: root.adjustmentInterval
+        onTriggered: root.dispatchQueued()
     }
     Timer {
         id: deadline
@@ -270,7 +361,9 @@ Item {
                                 draft: root.currentDraft(control)
                                 writable: root.writable(control)
                                 pending: root.pendingRequest !== "" && root.pendingControl === modelData
-                                onDraftEdited: function(value) { root.setDraft(modelData, value) }
+                                queued: root.queuedValues[modelData] !== undefined
+                                numberEnabled: writable && root.pendingRequest === "" && root.queuedControls.length === 0
+                                onDraftEdited: function(value) { root.requestSet(modelData, value) }
                                 onValueReleased: function(value) { root.requestSet(modelData, value) }
                                 onNumberRequested: root.editNumber(modelData)
                             }
@@ -290,7 +383,9 @@ Item {
                                 draft: root.currentDraft(control)
                                 writable: root.writable(control)
                                 pending: root.pendingRequest !== "" && root.pendingControl === modelData
-                                onDraftEdited: function(value) { root.setDraft(modelData, value) }
+                                queued: root.queuedValues[modelData] !== undefined
+                                numberEnabled: writable && root.pendingRequest === "" && root.queuedControls.length === 0
+                                onDraftEdited: function(value) { root.requestSet(modelData, value) }
                                 onValueReleased: function(value) { root.requestSet(modelData, value) }
                                 onNumberRequested: root.editNumber(modelData)
                             }
@@ -307,7 +402,9 @@ Item {
                             draft: root.currentDraft(control)
                             writable: root.writable(control)
                             pending: root.pendingRequest !== "" && root.pendingControl === "sharpness"
-                            onDraftEdited: function(value) { root.setDraft("sharpness", value) }
+                            queued: root.queuedValues.sharpness !== undefined
+                            numberEnabled: writable && root.pendingRequest === "" && root.queuedControls.length === 0
+                            onDraftEdited: function(value) { root.requestSet("sharpness", value) }
                             onValueReleased: function(value) { root.requestSet("sharpness", value) }
                             onNumberRequested: root.editNumber("sharpness")
                         }
