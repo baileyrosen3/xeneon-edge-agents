@@ -82,6 +82,8 @@ pub enum ActionKind {
     OrderPriority,
     BackendHerdr,
     BackendT3code,
+    Omarchy,
+    Trading,
 }
 
 /// Which agent manager the daemon observes and routes agent actions to.
@@ -334,6 +336,10 @@ pub struct PortalSnapshot {
     pub usage: AiUsageSnapshot,
     pub micro: MicroSnapshot,
     pub health: HealthSnapshot,
+    #[serde(default)]
+    pub omarchy: crate::omarchy::OmarchySnapshot,
+    #[serde(default)]
+    pub trading: crate::trading::TradingSnapshot,
 }
 
 impl PortalSnapshot {
@@ -352,6 +358,8 @@ impl PortalSnapshot {
             usage: AiUsageSnapshot::default(),
             micro: MicroSnapshot::default(),
             health: HealthSnapshot::default(),
+            omarchy: crate::omarchy::OmarchySnapshot::default(),
+            trading: crate::trading::TradingSnapshot::default(),
         }
     }
 }
@@ -367,6 +375,8 @@ pub struct PortalCommand {
     pub action: ActionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -23,7 +23,7 @@ use crate::model::{
 };
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-const SUPPORTED_HERDR_PROTOCOL: u32 = 20;
+const SUPPORTED_HERDR_PROTOCOLS: [u32; 2] = [20, 22];
 
 #[derive(Debug, Clone)]
 pub struct HerdrClient {
@@ -186,7 +186,7 @@ impl HerdrClient {
             json!({"id": request_id(), "method": "ping", "params": {}}),
         )
         .await?;
-        if ping.result.protocol != SUPPORTED_HERDR_PROTOCOL {
+        if !SUPPORTED_HERDR_PROTOCOLS.contains(&ping.result.protocol) {
             return Ok(SessionObservation {
                 session: SessionView {
                     name: descriptor.name.clone(),
@@ -195,8 +195,8 @@ impl HerdrClient {
                     protocol: Some(ping.result.protocol),
                     last_sync_ms: Some(now_ms),
                     message: Some(format!(
-                        "Herdr protocol {} is unsupported; expected {}",
-                        ping.result.protocol, SUPPORTED_HERDR_PROTOCOL
+                        "Herdr protocol {} is unsupported; expected 20 or 22",
+                        ping.result.protocol
                     )),
                 },
                 agents: Vec::new(),
@@ -210,12 +210,19 @@ impl HerdrClient {
             json!({"id": request_id(), "method": "session.snapshot", "params": {}}),
         )
         .await?;
-        let agent_order = match self.get_agent_order(descriptor).await {
-            Ok(mode) => Some(mode),
-            Err(error) => {
-                tracing::debug!(session = %descriptor.name, %error, "Herdr agent ordering API unavailable");
-                None
+        // Official v0.9.3 (protocol 22) shares the projection/focus API but
+        // lacks the reviewed protocol-20 fork's ordering and guarded actions.
+        let supports_fork_extensions = ping.result.protocol == 20;
+        let agent_order = if supports_fork_extensions {
+            match self.get_agent_order(descriptor).await {
+                Ok(mode) => Some(mode),
+                Err(error) => {
+                    tracing::debug!(session = %descriptor.name, %error, "Herdr agent ordering API unavailable");
+                    None
+                }
             }
+        } else {
+            None
         };
 
         let workspaces: HashMap<_, _> = response
@@ -258,7 +265,11 @@ impl HerdrClient {
                 .filter(|worktree| worktree.is_linked_worktree)
                 .and_then(|worktree| worktree.checkout_path.file_name())
                 .map(|name| name.to_string_lossy().into_owned());
-            let actions = actions_from_extra(&raw.extra, raw.revision);
+            let actions = if supports_fork_extensions {
+                actions_from_extra(&raw.extra, raw.revision)
+            } else {
+                AgentActions::default()
+            };
 
             targets.insert(
                 id.clone(),
@@ -367,6 +378,9 @@ impl HerdrClient {
             }
             ActionKind::OrderGrouped | ActionKind::OrderPriority => {
                 bail!("agent ordering is not an agent-target action")
+            }
+            ActionKind::Omarchy | ActionKind::Trading => {
+                bail!("dashboard actions cannot target Herdr")
             }
             ActionKind::BackendHerdr | ActionKind::BackendT3code => {
                 bail!("agent manager selection is not an agent-target action")
@@ -738,40 +752,112 @@ mod tests {
         );
     }
 
-    async fn observe_unsupported_protocol(protocol: u32) -> SessionObservation {
-        let temp = tempdir().unwrap();
-        let socket = temp.path().join("herdr.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let (read, mut write) = stream.into_split();
-            let mut lines = BufReader::new(read).lines();
-            let request: Value =
-                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            assert_eq!(request["method"], "ping");
-            let response = format!(
-                "{{\"id\":\"ping\",\"result\":{{\"version\":\"unsupported\",\"protocol\":{protocol}}}}}\n"
-            );
-            write.write_all(response.as_bytes()).await.unwrap();
-        });
-        let descriptor = SessionDescriptor {
-            name: "unsupported".into(),
-            running: true,
-            socket_path: socket,
-        };
+    struct SocketStub {
+        _temp: tempfile::TempDir,
+        descriptor: SessionDescriptor,
+        stop: oneshot::Sender<()>,
+        server: tokio::task::JoinHandle<Vec<Value>>,
+    }
 
-        let observation = HerdrClient::new("herdr")
-            .observe_session(&descriptor, "epoch", 0, 1234)
-            .await
-            .unwrap();
-        server.await.unwrap();
-        observation
+    impl SocketStub {
+        fn new(protocol: u32, snapshot: Value) -> Self {
+            let temp = tempdir().unwrap();
+            let socket = temp.path().join("herdr.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let (stop, mut stopped) = oneshot::channel();
+            let server = tokio::spawn(async move {
+                let mut requests = Vec::new();
+                loop {
+                    let (stream, _) = tokio::select! {
+                        _ = &mut stopped => break,
+                        connection = listener.accept() => connection.unwrap(),
+                    };
+                    let (read, mut write) = stream.into_split();
+                    let mut lines = BufReader::new(read).lines();
+                    let request: Value =
+                        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                    let result = match request["method"].as_str() {
+                        Some("ping") => json!({
+                            "version": if protocol == 22 { "0.9.3" } else { "0.8.0" },
+                            "protocol": protocol
+                        }),
+                        Some("session.snapshot") => json!({"snapshot": snapshot}),
+                        Some("agent.order.get") => {
+                            json!({"type": "agent_order", "order": "grouped"})
+                        }
+                        Some("agent.focus" | "pane.zoom" | "agent.perform_action") => {
+                            json!({})
+                        }
+                        method => panic!("unexpected request method: {method:?}"),
+                    };
+                    let response = json!({"id": request["id"], "result": result});
+                    requests.push(request);
+                    write
+                        .write_all(format!("{response}\n").as_bytes())
+                        .await
+                        .unwrap();
+                }
+                requests
+            });
+            Self {
+                _temp: temp,
+                descriptor: SessionDescriptor {
+                    name: "default".into(),
+                    running: true,
+                    socket_path: socket,
+                },
+                stop,
+                server,
+            }
+        }
+
+        async fn finish(self) -> Vec<Value> {
+            self.stop.send(()).unwrap();
+            self.server.await.unwrap()
+        }
+    }
+
+    fn projected_snapshot_with_fork_actions() -> Value {
+        json!({
+            "workspaces": [{
+                "workspace_id": "w1", "number": 1, "label": "xeneon",
+                "worktree": {
+                    "repo_name": "xeneon-edge-agents",
+                    "checkout_path": "/projects/xeneon/protocol-compat",
+                    "is_linked_worktree": true
+                }
+            }],
+            "tabs": [{"tab_id": "w1:t1", "label": "review"}],
+            "agents": [{
+                "terminal_id": "term-1", "agent": "codex",
+                "agent_status": "blocked", "workspace_id": "w1",
+                "tab_id": "w1:t1", "pane_id": "w1:p1", "focused": true,
+                "launch_pending": true, "revision": 4, "state_change_seq": 9,
+                "actions": [
+                    {"capability_id": "approve-1", "action": "approve",
+                     "expires_at_unix_ms": 999, "revision": 4},
+                    {"capability_id": "interrupt-1", "action": "interrupt",
+                     "expires_at_unix_ms": 999, "revision": 4}
+                ],
+                "action_capabilities": [
+                    {"id": "legacy-approve", "kind": "approve", "expires_at_ms": 999},
+                    {"id": "legacy-interrupt", "kind": "interrupt", "expires_at_ms": 999}
+                ]
+            }]
+        })
     }
 
     #[tokio::test]
     async fn unsupported_protocols_never_request_or_surface_session_data() {
-        for protocol in [19, 999] {
-            let observation = observe_unsupported_protocol(protocol).await;
+        for protocol in [19, 21, 23, 999] {
+            let stub = SocketStub::new(protocol, projected_snapshot_with_fork_actions());
+            let observation = HerdrClient::new("herdr")
+                .observe_session(&stub.descriptor, "epoch", 0, 1234)
+                .await
+                .unwrap();
+            let requests = stub.finish().await;
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0]["method"], "ping");
             assert_eq!(observation.session.state, SessionState::Incompatible);
             assert_eq!(observation.session.protocol, Some(protocol));
             assert!(observation.agents.is_empty());
@@ -782,58 +868,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn herdr_v0_8_protocol_20_requests_and_parses_the_snapshot() {
-        let temp = tempdir().unwrap();
-        let socket = temp.path().join("herdr.sock");
-        let listener = UnixListener::bind(&socket).unwrap();
-        let server = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.unwrap();
-            let (read, mut write) = stream.into_split();
-            let mut lines = BufReader::new(read).lines();
-            let request: Value =
-                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            assert_eq!(request["method"], "ping");
-            write
-                .write_all(
-                    b"{\"id\":\"ping\",\"result\":{\"version\":\"0.8.0\",\"protocol\":20}}\n",
-                )
-                .await
-                .unwrap();
-
-            let (stream, _) = listener.accept().await.unwrap();
-            let (read, mut write) = stream.into_split();
-            let mut lines = BufReader::new(read).lines();
-            let request: Value =
-                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            assert_eq!(request["method"], "session.snapshot");
-            write
-                .write_all(
-                    b"{\"id\":\"snapshot\",\"result\":{\"snapshot\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"number\":1,\"label\":\"xeneon\"}],\"tabs\":[{\"tab_id\":\"w1:t1\",\"label\":\"review\"}],\"agents\":[{\"terminal_id\":\"term-1\",\"agent\":\"codex\",\"agent_status\":\"blocked\",\"workspace_id\":\"w1\",\"tab_id\":\"w1:t1\",\"pane_id\":\"w1:p1\",\"revision\":4,\"state_change_seq\":9,\"actions\":[{\"capability_id\":\"interrupt-1\",\"action\":\"interrupt\",\"expires_at_unix_ms\":999,\"revision\":4}]}]}}}\n",
-                )
-                .await
-                .unwrap();
-
-            let (stream, _) = listener.accept().await.unwrap();
-            let (read, mut write) = stream.into_split();
-            let mut lines = BufReader::new(read).lines();
-            let request: Value =
-                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            assert_eq!(request["method"], "agent.order.get");
-            write
-                .write_all(
-                    b"{\"id\":\"order\",\"result\":{\"type\":\"agent_order\",\"order\":\"grouped\"}}\n",
-                )
-                .await
-                .unwrap();
-        });
-        let descriptor = SessionDescriptor {
-            name: "default".into(),
-            running: true,
-            socket_path: socket,
-        };
-
-        let observation = HerdrClient::new("herdr")
-            .observe_session(&descriptor, "epoch", 0, 1234)
+    async fn herdr_v0_8_protocol_20_preserves_ordering_and_guarded_actions() {
+        let stub = SocketStub::new(20, projected_snapshot_with_fork_actions());
+        let client = HerdrClient::new("herdr");
+        let observation = client
+            .observe_session(&stub.descriptor, "epoch", 0, 1234)
             .await
             .unwrap();
 
@@ -842,17 +881,125 @@ mod tests {
         assert_eq!(observation.session.protocol, Some(20));
         assert_eq!(observation.agent_order, Some(AgentOrderMode::Grouped));
         assert_eq!(observation.agents.len(), 1);
-        assert_eq!(observation.agents[0].display_name, "review");
-        assert_eq!(observation.agents[0].status, AgentStatus::Blocked);
+        let agent = &observation.agents[0];
+        assert_eq!(agent.display_name, "review");
+        assert_eq!(agent.status, AgentStatus::Blocked);
+        for (action, capability) in [
+            (ActionKind::Approve, agent.actions.approve.as_ref().unwrap()),
+            (
+                ActionKind::Interrupt,
+                agent.actions.interrupt.as_ref().unwrap(),
+            ),
+        ] {
+            client
+                .perform(
+                    &observation.targets[&agent.id],
+                    action,
+                    Some(&capability.capability_id),
+                )
+                .await
+                .unwrap();
+        }
+        let requests = stub.finish().await;
+        let methods = requests
+            .iter()
+            .map(|request| request["method"].as_str().unwrap())
+            .collect::<Vec<_>>();
         assert_eq!(
-            observation.agents[0]
-                .actions
-                .interrupt
-                .as_ref()
-                .map(|capability| capability.capability_id.as_str()),
-            Some("interrupt-1")
+            methods,
+            [
+                "ping",
+                "session.snapshot",
+                "agent.order.get",
+                "agent.perform_action",
+                "agent.perform_action"
+            ]
         );
-        server.await.unwrap();
+        assert_eq!(requests[3]["params"], json!({"capability_id": "approve-1"}));
+        assert_eq!(
+            requests[4]["params"],
+            json!({"capability_id": "interrupt-1"})
+        );
+    }
+
+    #[tokio::test]
+    async fn herdr_v0_9_3_protocol_22_projects_metadata_and_only_focus_actions() {
+        let stub = SocketStub::new(22, projected_snapshot_with_fork_actions());
+        let client = HerdrClient::new("herdr");
+        let observation = client
+            .observe_session(&stub.descriptor, "epoch", 5, 1234)
+            .await
+            .unwrap();
+
+        assert_eq!(observation.session.state, SessionState::Connected);
+        assert_eq!(observation.session.version.as_deref(), Some("0.9.3"));
+        assert_eq!(observation.session.protocol, Some(22));
+        assert_eq!(observation.session.last_sync_ms, Some(1234));
+        assert_eq!(observation.agent_order, None);
+        assert_eq!(observation.agents.len(), 1);
+        let agent = &observation.agents[0];
+        assert_eq!(agent.display_name, "review");
+        assert_eq!(agent.agent, "codex");
+        assert_eq!(agent.status, AgentStatus::Blocked);
+        assert!(agent.focused);
+        assert!(agent.launch_pending);
+        assert_eq!(agent.state_change_seq, 9);
+        assert_eq!(agent.source_order, 5);
+        assert_eq!(agent.workspace, "1 · xeneon");
+        assert_eq!(agent.repository.as_deref(), Some("xeneon-edge-agents"));
+        assert_eq!(agent.worktree.as_deref(), Some("protocol-compat"));
+        assert!(agent.actions.open);
+        assert!(agent.actions.zoom);
+        assert!(agent.actions.approve.is_none());
+        assert!(agent.actions.interrupt.is_none());
+        for (action, capability_id) in [
+            (ActionKind::Approve, "approve-1"),
+            (ActionKind::Interrupt, "interrupt-1"),
+        ] {
+            assert!(!crate::protocol::command_capability_matches(
+                &crate::model::PortalCommand {
+                    schema_version: crate::model::SCHEMA_VERSION,
+                    request_id: "guarded".into(),
+                    sequence: 1,
+                    agent_id: Some(agent.id.clone()),
+                    action,
+                    capability_id: Some(capability_id.into()),
+                    parameters: None,
+                },
+                agent,
+            ));
+        }
+        assert_eq!(observation.pane_ids, ["w1:p1"]);
+        let target = &observation.targets[&agent.id];
+        assert_eq!(target.session, "default");
+        assert_eq!(target.socket_path, stub.descriptor.socket_path);
+        assert_eq!(target.pane_id, "w1:p1");
+        assert_eq!(target.terminal_id, "term-1");
+        assert_eq!(target.state_change_seq, 9);
+        assert_eq!(target.revision, 4);
+        client
+            .perform(target, ActionKind::Open, None)
+            .await
+            .unwrap();
+        client
+            .perform(target, ActionKind::Zoom, None)
+            .await
+            .unwrap();
+
+        let requests = stub.finish().await;
+        let methods = requests
+            .iter()
+            .map(|request| request["method"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            methods,
+            ["ping", "session.snapshot", "agent.focus", "pane.zoom"]
+        );
+        assert_eq!(requests[2]["params"], json!({"target": "w1:p1"}));
+        assert_eq!(
+            requests[3]["params"],
+            json!({"pane_id": "w1:p1", "mode": "toggle"})
+        );
     }
 
     #[tokio::test]

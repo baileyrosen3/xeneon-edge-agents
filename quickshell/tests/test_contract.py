@@ -163,7 +163,7 @@ class QmlSafetyContractTests(unittest.TestCase):
         portal = source("components/PortalView.qml")
         activity = source("state/ActivityController.qml")
         shell = source("shell.qml")
-        self.assertIn("readonly property int pageSize: 14", portal)
+        self.assertIn("readonly property int pageSize: compactLayout ? 10 : 14", portal)
         self.assertIn("return Math.ceil(count / 2)", portal)
         ambient = source("components/AmbientView.qml")
         self.assertIn("readonly property int nodeLimit: 14", ambient)
@@ -223,7 +223,7 @@ class QmlSafetyContractTests(unittest.TestCase):
         self.assertIn("snapshotSequence: root.store.sequence", portal)
         self.assertIn("restoreFocus(sequence)", portal)
         self.assertIn(
-            "function build(action, agentId, capabilityId, pinnedSequence)",
+            "function build(action, agentId, capabilityId, pinnedSequence, parameters)",
             builder,
         )
         self.assertNotIn("property double snapshotSequence", builder)

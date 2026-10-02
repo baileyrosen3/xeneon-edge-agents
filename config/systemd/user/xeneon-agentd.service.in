@@ -7,6 +7,7 @@ PartOf=graphical-session.target
 [Service]
 Type=simple
 Environment="XDG_CONFIG_HOME=@CONFIG_HOME@"
+Environment="XDG_DATA_HOME=@DATA_HOME@"
 Environment="XDG_STATE_HOME=@STATE_HOME@"
 Environment="PATH=@BIN_HOME@:/usr/local/bin:/usr/bin"
 EnvironmentFile=%t/xeneon-edge-agents/screen.env
@@ -20,4 +21,4 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths="@STATE_HOME@/xeneon-edge-agents" %t/xeneon-edge-agents
+ReadWritePaths="@CONFIG_HOME@" "@DATA_HOME@" "@STATE_HOME@" %h/.cache -%h/Pictures -%h/Videos %t/xeneon-edge-agents

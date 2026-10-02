@@ -629,6 +629,39 @@ Item {
 
             visible: root.pageCount > 1
 
+            DashboardButton {
+                objectName: "agentPreviousPage"
+                visible: root.compactLayout
+                theme: root.theme
+                width: 52
+                height: 48
+                label: "‹"
+                enabled: root.controlCenterInteractive && root.currentPage > 0
+                onClicked: root.selectPage(root.currentPage - 1)
+            }
+            Text {
+                visible: root.compactLayout
+                width: 96
+                height: 48
+                text: "AGENTS " + (root.currentPage + 1) + "/" + root.pageCount
+                textFormat: Text.PlainText
+                color: root.theme.accent
+                font.family: "monospace"
+                font.pixelSize: 13
+                font.weight: Font.DemiBold
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+            }
+            DashboardButton {
+                objectName: "agentNextPage"
+                visible: root.compactLayout
+                theme: root.theme
+                width: 52
+                height: 48
+                label: "›"
+                enabled: root.controlCenterInteractive && root.currentPage < root.pageCount - 1
+                onClicked: root.selectPage(root.currentPage + 1)
+            }
             Repeater {
                 model: root.pageCount
 
@@ -637,6 +670,7 @@ Item {
 
                     width: 58
                     height: 48
+                    visible: !root.compactLayout
                     color: "transparent"
                     enabled: root.controlCenterInteractive
 

@@ -31,6 +31,8 @@ QtObject {
         "switchable": false
     })
     property var health: ({})
+    property var omarchy: ({})
+    property var trading: ({"connection":"disabled", "execution_enabled":false, "accounts":[], "positions":[], "orders":[], "quotes":[], "fills":[]})
     property var voice: ({
         "available": false,
         "state": "unavailable",
@@ -110,6 +112,8 @@ QtObject {
         agentOrder = {"available": false, "mode": "grouped"}
         backend = {"mode": "herdr", "switchable": false}
         health = {}
+        omarchy = {}
+        trading = normalizeTrading({})
         voice = {
             "available": false,
             "state": "unavailable",
@@ -431,8 +435,7 @@ QtObject {
             "gpu_temperature",
             "memory",
             "network_down",
-            "network_up",
-            "battery"
+            "network_up"
         ]
         normalized.status = "healthy"
         for (var index = 0; index < required.length; index += 1) {
@@ -442,6 +445,55 @@ QtObject {
             }
         }
         return normalized
+    }
+
+    function optionalNumber(value) {
+        if (value === null || value === undefined) return null
+        return finiteNumber(value, null)
+    }
+
+    function optionalBoolean(value) {
+        return typeof value === "boolean" ? value : null
+    }
+
+    function boundedRows(value, limit, normalize) {
+        if (!Array.isArray(value)) return []
+        return value.slice(0, limit).filter(function(row) { return row && typeof row === "object" }).map(normalize)
+    }
+
+    function normalizeOmarchy(value) {
+        var s = value && typeof value === "object" ? value : {}
+        var a = s.audio || {}, m = s.media || {}, b = s.edge_brightness || {}
+        return {
+            "audio": {"available": a.available === true, "volume_percent": optionalNumber(a.volume_percent), "muted": optionalBoolean(a.muted), "microphone_muted": optionalBoolean(a.microphone_muted), "default_output_id": optionalNumber(a.default_output_id), "outputs": boundedRows(a.outputs, 64, function(o) { return {"id": optionalNumber(o.id), "name": safeString(o.name,"",180)} })},
+            "media": {"available":m.available === true, "player":safeString(m.player,"",180), "identity":safeString(m.identity,"",100), "playback_status":safeString(m.playback_status,"",32), "title":safeString(m.title,"",240), "artist":safeString(m.artist,"",180)},
+            "dnd":optionalBoolean(s.dnd), "keepawake":optionalBoolean(s.keepawake), "nightlight":optionalBoolean(s.nightlight), "recording":optionalBoolean(s.recording),
+            "theme":safeString(s.theme,"",100), "themes":Array.isArray(s.themes) ? s.themes.slice(0,128).map(function(t) { return safeString(t,"",100) }) : [],
+            "power_profile":safeString(s.power_profile,"",80), "power_profiles":Array.isArray(s.power_profiles) ? s.power_profiles.slice(0,16).map(function(t) { return safeString(t,"",80) }) : [],
+            "storage":boundedRows(s.storage,16,function(d) { return {"mount":safeString(d.mount,"",180),"total_bytes":optionalNumber(d.total_bytes),"available_bytes":optionalNumber(d.available_bytes),"used_percent":optionalNumber(d.used_percent)} }),
+            "processes":boundedRows(s.processes,16,function(p) { return {"pid":optionalNumber(p.pid),"name":safeString(p.name,"",100),"cpu_percent":optionalNumber(p.cpu_percent)} }),
+            "edge_brightness":{"available":b.available === true,"percent":optionalNumber(b.percent),"reason":safeString(b.reason,"",240)}
+        }
+    }
+
+    function opaqueId(value, limit) {
+        return typeof value === "string" ? safeString(value,"",limit || 128) : ""
+    }
+
+    function normalizeTrading(value) {
+        var s = value && typeof value === "object" ? value : {}
+        var state = safeString(s.connection,"disabled",32)
+        if (["disabled","unconfigured","connecting","connected","stale","offline"].indexOf(state) === -1) state = "offline"
+        return {
+            "connection":state, "sampled_at_ms":finiteNumber(s.sampled_at_ms,0), "broker_connected":s.broker_connected === true,
+            "execution_enabled":s.execution_enabled === true && state === "connected" && s.broker_connected === true,
+            "supports_brackets":s.supports_brackets === true, "supports_flatten":s.supports_flatten === true, "supports_close":s.supports_close === true, "supports_reverse":s.supports_reverse === true, "message":safeString(s.message,"",300),
+            "accounts":boundedRows(s.accounts,64,function(a) { return {"id":opaqueId(a.id,128),"label":safeString(a.label,"",180),"account_type":safeString(a.account_type,"UNKNOWN",32),"can_trade":a.can_trade === true,"balance":optionalNumber(a.balance),"open_pnl":optionalNumber(a.open_pnl),"closed_pnl":optionalNumber(a.closed_pnl),"loss_limit":optionalNumber(a.loss_limit),"min_account_balance":optionalNumber(a.min_account_balance),"auto_liquidate_threshold":optionalNumber(a.auto_liquidate_threshold)} }),
+            "positions":boundedRows(s.positions,256,function(p) { return {"account_id":opaqueId(p.account_id,128),"symbol":safeString(p.symbol,"",64),"quantity":finiteNumber(p.quantity,0),"can_close":p.can_close === true,"average_price":optionalNumber(p.average_price),"open_pnl":optionalNumber(p.open_pnl)} }),
+            "orders":boundedRows(s.orders,512,function(o) { return {"id":opaqueId(o.id,128),"account_id":opaqueId(o.account_id,128),"symbol":safeString(o.symbol,"",64),"side":safeString(o.side,"",16),"quantity":finiteNumber(o.quantity,0),"filled_quantity":finiteNumber(o.filled_quantity,0),"order_type":safeString(o.order_type,"",32),"price":optionalNumber(o.price),"stop_price":optionalNumber(o.stop_price),"status":safeString(o.status,"",32)} }),
+            "quotes":boundedRows(s.quotes,256,function(q) { return {"symbol":safeString(q.symbol,"",64),"bid":optionalNumber(q.bid),"ask":optionalNumber(q.ask),"last":optionalNumber(q.last),"tick_size":optionalNumber(q.tick_size),"dollars_per_point":optionalNumber(q.dollars_per_point),"updated_at_ms":finiteNumber(q.updated_at_ms,0)} }),
+            "fills":boundedRows(s.fills,256,function(f) { return {"id":opaqueId(f.id,128),"account_id":opaqueId(f.account_id,128),"symbol":safeString(f.symbol,"",64),"side":safeString(f.side,"",16),"quantity":finiteNumber(f.quantity,0),"price":optionalNumber(f.price),"pnl":optionalNumber(f.pnl),"fees":optionalNumber(f.fees),"time_ms":finiteNumber(f.time_ms,0)} })
+        }
     }
 
     function normalizeVoice(value) {
@@ -687,6 +739,8 @@ QtObject {
                     var nextMicro = normalizeMicro(snapshot.micro)
                     generatedAtMs = nextGeneratedAtMs
                     health = normalizeHealth(snapshot.health)
+                    omarchy = normalizeOmarchy(snapshot.omarchy)
+                    trading = normalizeTrading(snapshot.trading)
                     voice = nextVoice
                     usage = nextUsage
                     micro = nextMicro
@@ -738,6 +792,8 @@ QtObject {
         agents = nextAgents
         agentOrder = nextAgentOrder
         health = normalizeHealth(snapshot.health)
+                    omarchy = normalizeOmarchy(snapshot.omarchy)
+                    trading = normalizeTrading(snapshot.trading)
         voice = nextVoice
         usage = nextUsage
         micro = nextMicro

@@ -29,8 +29,10 @@ use crate::{
         AgentOrderSnapshot, AgentStatus, ConnectionState, PortalCommand, PortalSnapshot,
         SCHEMA_VERSION, ServerMessage, SessionState, SessionView, VoiceState, sort_agents,
     },
+    omarchy::{OmarchyController, OmarchyRequest},
     protocol::{command_capability_matches, validate_command},
     t3code::{self, T3codeClient, T3codeTarget},
+    trading::{TradingCommandState, TradingController, TradingRequest},
     usage::UsageCollector,
     voice::{VoiceActionError, VoiceController},
 };
@@ -162,6 +164,8 @@ pub struct DaemonRuntime {
     desktop: Arc<DesktopController>,
     voice: Arc<Mutex<VoiceController>>,
     order_operation: Arc<Mutex<()>>,
+    omarchy: Arc<Mutex<OmarchyController>>,
+    trading: TradingController,
     updates: watch::Sender<String>,
     invalidations: mpsc::Sender<String>,
 }
@@ -199,6 +203,7 @@ impl DaemonRuntime {
         let desktop = DesktopController::new(config.desktop.clone());
         let voice = VoiceController::from_config(&config, snapshot.daemon_epoch.clone())?;
         let t3code = T3codeClient::from_config(config.t3code.home.as_deref())?;
+        let trading = TradingController::new(config.trading.clone());
         Ok((
             Self {
                 herdr: HerdrClient::new(config.herdr_bin.clone()),
@@ -219,6 +224,8 @@ impl DaemonRuntime {
                 desktop: Arc::new(desktop),
                 voice: Arc::new(Mutex::new(voice)),
                 order_operation: Arc::new(Mutex::new(())),
+                omarchy: Arc::new(Mutex::new(OmarchyController::default())),
+                trading,
                 updates,
                 invalidations,
             },
@@ -243,8 +250,24 @@ impl DaemonRuntime {
             agent_runtime.collect_agent_loop(invalidation_rx).await;
         });
 
+        let dashboard_runtime = self.clone();
+        let mut dashboard_collector = tokio::spawn(async move {
+            dashboard_runtime.collect_dashboard_loop().await;
+        });
+        let trading_runtime = self.clone();
+        let mut trading_collector = tokio::spawn(async move {
+            trading_runtime.collect_trading_loop().await;
+        });
         loop {
             tokio::select! {
+                result = &mut dashboard_collector => {
+                    result.context("joining desktop dashboard collector")?;
+                    bail!("desktop dashboard collector stopped unexpectedly");
+                }
+                result = &mut trading_collector => {
+                    result.context("joining trading dashboard collector")?;
+                    bail!("trading dashboard collector stopped unexpectedly");
+                }
                 result = &mut auxiliary_collector => {
                     result.context("joining auxiliary state collector")?;
                     bail!("auxiliary state collector stopped unexpectedly");
@@ -265,6 +288,43 @@ impl DaemonRuntime {
                             tracing::warn!(%error, "portal client disconnected");
                         }
                     });
+                }
+            }
+        }
+    }
+
+    async fn collect_dashboard_loop(&self) {
+        let mut timer = interval(Duration::from_secs(3));
+        timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            timer.tick().await;
+            let sample = self.omarchy.lock().await.sample().await;
+            let mut state = self.state.write().await;
+            state.snapshot.omarchy = sample;
+            state.snapshot.generated_at_ms = now_ms();
+            drop(state);
+            self.publish().await;
+        }
+    }
+
+    async fn collect_trading_loop(&self) {
+        let (tx, mut rx) = watch::channel(crate::trading::TradingSnapshot::default());
+        let controller = self.trading.clone();
+        // The stream owns its lifecycle independently from desktop/agent probes.
+        let mut stream = tokio::spawn(async move {
+            controller.run(tx).await;
+        });
+        loop {
+            tokio::select! {
+                result = &mut stream => { if let Err(error) = result { tracing::warn!(%error, "trading stream task failed"); } return; },
+                result = rx.changed() => {
+                    if result.is_err() { return; }
+                    let sample = rx.borrow_and_update().clone();
+                    let mut state = self.state.write().await;
+                    state.snapshot.trading = sample;
+                    state.snapshot.generated_at_ms = now_ms();
+                    drop(state);
+                    self.publish().await;
                 }
             }
         }
@@ -782,6 +842,62 @@ impl DaemonRuntime {
             return action_error(&command.request_id, "invalid_command", error.to_string());
         }
 
+        if command.action == ActionKind::Omarchy {
+            let request =
+                match serde_json::from_value::<OmarchyRequest>(command.parameters.clone().unwrap())
+                {
+                    Ok(request) => request,
+                    Err(_) => {
+                        return action_error(
+                            &command.request_id,
+                            "invalid_command",
+                            "Invalid desktop operation parameters",
+                        );
+                    }
+                };
+            return match self.omarchy.lock().await.perform(&request).await {
+                Ok(()) => action_ok(&command.request_id, "desktop_action_completed"),
+                Err(error) => action_error(
+                    &command.request_id,
+                    "desktop_action_failed",
+                    error.to_string(),
+                ),
+            };
+        }
+        if command.action == ActionKind::Trading {
+            let request =
+                match serde_json::from_value::<TradingRequest>(command.parameters.clone().unwrap())
+                {
+                    Ok(request) => request,
+                    Err(_) => {
+                        return action_error(
+                            &command.request_id,
+                            "invalid_command",
+                            "Invalid trading operation parameters",
+                        );
+                    }
+                };
+            let epoch = self.state.read().await.snapshot.daemon_epoch.clone();
+            let id = Uuid::new_v5(
+                &Uuid::NAMESPACE_OID,
+                format!("{epoch}:{}", command.request_id).as_bytes(),
+            )
+            .to_string();
+            let result = self.trading.perform(&request, &id).await;
+            return match result.state {
+                TradingCommandState::Confirmed => action_ok(&command.request_id, result.message),
+                TradingCommandState::Rejected => {
+                    action_error(&command.request_id, "trading_rejected", result.message)
+                }
+                TradingCommandState::Pending => {
+                    action_error(&command.request_id, "outcome_pending", result.message)
+                }
+                TradingCommandState::Unknown => {
+                    action_error(&command.request_id, "outcome_unknown", result.message)
+                }
+            };
+        }
+
         if command.action == ActionKind::RestoreFocus {
             return match self.desktop.restore_focus().await {
                 Ok(()) => action_ok(&command.request_id, "focus_restored"),
@@ -895,7 +1011,9 @@ impl DaemonRuntime {
             | ActionKind::OrderGrouped
             | ActionKind::OrderPriority
             | ActionKind::BackendHerdr
-            | ActionKind::BackendT3code => true,
+            | ActionKind::BackendT3code
+            | ActionKind::Omarchy
+            | ActionKind::Trading => true,
         };
         if !enabled {
             return action_error(
@@ -1733,6 +1851,7 @@ mod tests {
                 agent_id: None,
                 action: ActionKind::OrderPriority,
                 capability_id: None,
+                parameters: None,
             })
             .await;
 
@@ -1856,6 +1975,7 @@ mod tests {
                 agent_id: None,
                 action: ActionKind::OrderPriority,
                 capability_id: None,
+                parameters: None,
             })
             .await;
 
@@ -1932,6 +2052,7 @@ mod tests {
             agent_id: None,
             action: ActionKind::OrderPriority,
             capability_id: None,
+            parameters: None,
         };
         let first_runtime = runtime.clone();
         let first =
@@ -1947,6 +2068,7 @@ mod tests {
                     agent_id: None,
                     action: ActionKind::OrderPriority,
                     capability_id: None,
+                    parameters: None,
                 })
                 .await
         });
@@ -2117,6 +2239,7 @@ mod tests {
             agent_id: None,
             action: ActionKind::VoiceStart,
             capability_id: None,
+            parameters: None,
         };
 
         assert!(runtime.process_voice_command(&command, client_id).await.ok);
@@ -2184,6 +2307,7 @@ mod tests {
             agent_id: None,
             action,
             capability_id: None,
+            parameters: None,
         }
     }
 
@@ -2323,6 +2447,7 @@ mod tests {
                 agent_id: None,
                 action: ActionKind::OrderPriority,
                 capability_id: None,
+                parameters: None,
             })
             .await;
 
@@ -2365,6 +2490,7 @@ mod tests {
                 agent_id: Some("thread".into()),
                 action,
                 capability_id: capability.map(str::to_owned),
+                parameters: None,
             })
             .unwrap()
         };
@@ -2503,5 +2629,136 @@ mod tests {
             load_persisted_backend(&temp.path().join("missing.toml")),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn malformed_dashboard_parameters_never_enter_action_controllers() {
+        let (runtime, _) = DaemonRuntime::new(Config::default()).unwrap();
+        // Holding this gate makes accidental desktop dispatch fail the timeout
+        // before it can invoke any real host command.
+        let _desktop_gate = runtime.omarchy.lock().await;
+        for (action, parameters) in [
+            (
+                ActionKind::Omarchy,
+                serde_json::json!({"operation":"screenshot","shell":"arbitrary input"}),
+            ),
+            (
+                ActionKind::Omarchy,
+                serde_json::json!({"operation":"volume","percent":"55"}),
+            ),
+            (
+                ActionKind::Omarchy,
+                serde_json::json!({"operation":"shell","command":"arbitrary input"}),
+            ),
+            (
+                ActionKind::Trading,
+                serde_json::json!({"action":"cancel_all","account_id":18446744073709551615_u64}),
+            ),
+            (
+                ActionKind::Trading,
+                serde_json::json!({"action":"cancel_all","account_id":"opaque-account","shell":"arbitrary input"}),
+            ),
+            (
+                ActionKind::Trading,
+                serde_json::json!({"action":"place","account_id":"opaque-account","symbol":"NQZ6","side":"buy","quantity":"1","order_type":"market"}),
+            ),
+        ] {
+            let command = PortalCommand {
+                schema_version: SCHEMA_VERSION,
+                request_id: "invalid-dashboard-request".into(),
+                sequence: 0,
+                agent_id: None,
+                action,
+                capability_id: None,
+                parameters: Some(parameters),
+            };
+            let result = tokio::time::timeout(
+                Duration::from_millis(250),
+                runtime.process_command(&serde_json::to_string(&command).unwrap(), Uuid::new_v4()),
+            )
+            .await
+            .expect("Malformed parameters must reject before controller dispatch");
+            assert!(!result.ok);
+            assert_eq!(result.code, "invalid_command");
+        }
+    }
+
+    #[tokio::test]
+    async fn disabled_trading_keeps_real_daemon_socket_alive_and_rejects_execution() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("dashboard-daemon.sock");
+        let (mut runtime, invalidations) = DaemonRuntime::new(Config {
+            agent_backend: AgentBackend::T3code,
+            herdr_bin: temp.path().join("missing-herdr"),
+            voxtype_bin: temp.path().join("missing-voxtype"),
+            t3code: crate::config::T3codeConfig {
+                home: Some(temp.path().join("empty-t3")),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .unwrap();
+        // Isolate voice reads/ownership from the user's actual dictation state.
+        runtime.voice = Arc::new(Mutex::new(VoiceController::new(
+            temp.path().join("missing-voxtype"),
+            temp.path().join("voice-state"),
+            temp.path().join("voice-owner"),
+            "test-daemon",
+        )));
+        let server_path = socket.clone();
+        let daemon = tokio::spawn(async move { runtime.run(&server_path, invalidations).await });
+        let stream = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Ok(stream) = UnixStream::connect(&socket).await {
+                    break stream;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Daemon socket must become available");
+        let (read, mut write) = stream.into_split();
+        let mut lines = BufReader::new(read).lines();
+        let initial = tokio::time::timeout(Duration::from_secs(1), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        let initial: serde_json::Value = serde_json::from_str(&initial).unwrap();
+        assert_eq!(initial["type"], "snapshot");
+        assert_eq!(initial["trading"]["execution_enabled"], false);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(
+            !daemon.is_finished(),
+            "Disabled trading must not terminate the daemon"
+        );
+        let request = serde_json::json!({
+            "schema_version":SCHEMA_VERSION,"request_id":"disabled-trading-command","sequence":0,
+            "action":"trading","parameters":{"action":"cancel_all","account_id":"opaque-account"}
+        });
+        write
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        let verdict = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let line = lines
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("Daemon disconnected");
+                let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+                if message["type"] == "action_result" {
+                    break message;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(verdict["request_id"], "disabled-trading-command");
+        assert_eq!(verdict["ok"], false);
+        assert_eq!(verdict["code"], "trading_rejected");
+        assert!(!daemon.is_finished());
+        daemon.abort();
     }
 }

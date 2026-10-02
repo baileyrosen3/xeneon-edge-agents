@@ -164,6 +164,8 @@ TestCase {
             execution_enabled: true,
             supports_brackets: true,
             supports_flatten: true,
+            supports_close: true,
+            supports_reverse: true,
             accounts: [
                 {
                     id: "exact-live-account",
@@ -182,6 +184,7 @@ TestCase {
                     account_id: "exact-live-account",
                     symbol: "MESZ6",
                     quantity: 2,
+                    can_close: true,
                     average_price: 5800.25,
                     open_pnl: 215
                 }
@@ -409,6 +412,48 @@ TestCase {
         verify(trading.submit("sell", false));
         compare(bridge.lastTrading.stop_price, 5800.25);
         compare(bridge.lastTrading.trail_ticks, 8);
+    }
+    function test_decimalTickMetadataAvoidsFloatNoise() {
+        dashboards.selectDashboard(1);
+        var trading = findChild(dashboards, "riptideDashboard");
+        var decimal = snapshot();
+        decimal.quotes[0].tick_size = 0.009999999776482582;
+        store.trading = decimal;
+        trading.orderType = "limit";
+        trading.price = "100.001";
+        verify(!trading.submit("buy", false));
+        trading.price = "100.00";
+        verify(trading.submit("buy", false));
+        compare(bridge.lastTrading.price, 100);
+        store.actionResultReceived({
+            request_id: "trading-1",
+            ok: true,
+            code: "confirmed",
+            message: "Entry confirmed"
+        });
+        trading.price = "100.01";
+        verify(trading.submit("buy", false));
+        compare(bridge.lastTrading.price, 100.01);
+    }
+    function test_compactAgentPaginationIsVisibleAndClickable() {
+        dashboards.selectDashboard(0)
+        var agents = findChild(dashboards, "combinedAgentPortal")
+        compare(agents.pageCount, 2)
+        var dots = findChild(agents, "pageDots")
+        verify(dots.visible)
+        verify(dots.width > 0)
+        verify(dots.height >= 44)
+        var next = findChild(agents, "agentNextPage")
+        var previous = findChild(agents, "agentPreviousPage")
+        verify(next.visible)
+        verify(next.enabled)
+        mouseClick(next, next.width / 2, next.height / 2)
+        tryCompare(agents, "currentPage", 1)
+        var eleventh = findChild(agents, "agentCard_1_0")
+        verify(eleventh !== null)
+        compare(eleventh.agent.display_name, "Agent 11")
+        mouseClick(previous, previous.width / 2, previous.height / 2)
+        tryCompare(agents, "currentPage", 0)
     }
     function test_previewBlocksBothActionFamilies() {
         dashboards.previewMode = true;

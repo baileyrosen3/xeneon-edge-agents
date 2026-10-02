@@ -186,7 +186,9 @@ test_default_idempotence_and_uninstall() {
     fail 'agentd must not share ownership of the reconciler runtime directory'
   fi
   assert_contains "$root/.config/systemd/user/xeneon-agentd.service" \
-    "ReadWritePaths=\"$root/.local/state/xeneon-edge-agents\" %t/xeneon-edge-agents"
+    "ReadWritePaths=\"$root/.config\" \"$root/.local/share\" \"$root/.local/state\" %h/.cache -%h/Pictures -%h/Videos %t/xeneon-edge-agents"
+  assert_contains "$root/.config/systemd/user/xeneon-agentd.service" \
+    "Environment=\"XDG_DATA_HOME=$root/.local/share\""
   assert_contains "$root/.config/systemd/user/xeneon-agentd.service" \
     'EnvironmentFile=%t/xeneon-edge-agents/screen.env'
   assert_contains "$root/.config/systemd/user/xeneon-edge-portal.service" \

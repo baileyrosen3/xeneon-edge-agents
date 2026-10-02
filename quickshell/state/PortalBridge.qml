@@ -84,7 +84,7 @@ QtObject {
         }
     }
 
-    function sendBuilt(action, agentId, capabilityId, pinnedSequence) {
+    function sendBuilt(action, agentId, capabilityId, pinnedSequence, parameters) {
         if (store.freshSnapshotRequired) {
             commandRejected("Waiting for a fresh snapshot")
             return ""
@@ -94,7 +94,8 @@ QtObject {
             action,
             agentId,
             capabilityId,
-            pinnedSequence
+            pinnedSequence,
+            parameters
         )
         if (command === null) {
             commandRejected(commandBuilder.lastError)
@@ -116,6 +117,20 @@ QtObject {
         bridgeProcess.write(JSON.stringify(command) + "\n")
         commandEmitted(command)
         return command.request_id
+    }
+
+    function omarchyAction(payload) {
+        if (previewMode) { commandRejected("Desktop controls are disabled in preview"); return "" }
+        return sendBuilt("omarchy", "", "", store.sequence, payload)
+    }
+
+    function tradingAction(payload) {
+        if (previewMode) { commandRejected("Trading is disabled in preview"); return "" }
+        if (store.trading.execution_enabled !== true || store.trading.connection !== "connected") {
+            commandRejected("Trading connection is not ready for execution")
+            return ""
+        }
+        return sendBuilt("trading", "", "", store.sequence, payload)
     }
 
     function openAgent(agentId) {

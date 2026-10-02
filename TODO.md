@@ -1,5 +1,30 @@
 # XENEON EDGE Agent Command Center Ledger
 
+## Local Omarchy setup (2026-10-01)
+
+- Editable clone: `local/omarchy`, based on `6c0bcc55fe74b476a0707932a94f2e50bc136ead`.
+- Installed Herdr reports v0.9.3 / protocol 22; package metadata still reports
+  v0.8.2. Verified official v0.9.3 source at `7b116c05`, live projected snapshot
+  field types, and all 20 current event subscription acknowledgements.
+- Added explicit protocol-22 status, focus, and zoom compatibility. Ordering
+  and guarded actions stay unavailable; protocol 21 and unknown versions stay
+  incompatible. Independent review approved the adapter and authority checks.
+- Upstream Rust, QML, shell, and isolated installer checks passed. After the
+  compatibility change, formatting, 110 Rust tests, Clippy, and the release
+  build passed. Unchanged QML gates passed 28 Python contract/fixture tests,
+  116 QML tests, and 30 isolated installer scenarios.
+- Exact connected EDGE identity and touchscreen passed production staging.
+  USB touchscreen `wch.cn-touchscreen-1` has stable uniq `9LQ0172005164`;
+  commissioning uses this identity rather than its changing USB topology.
+- Read/write/restore proof: exact EDGE DDC bus brightness 95 -> 94 -> 95.
+  Production activation passed; the daemon observes three agents through
+  Herdr protocol 22, and the portal surface exists only on the exact EDGE.
+  Hyprland reload, config-error, Lua syntax, and installed identity checks pass.
+  The hardware reconciler and input watcher are enabled; application services
+  run only through the commissioned hardware lifecycle.
+  Interactive touch coordinates, unplug/replug, suspend, and lock privacy
+  remain physical acceptance checks; do not describe them as tested.
+
 ## Goal
 
 Implement a simulator-first, touch-oriented XENEON EDGE portal for all running
@@ -478,3 +503,31 @@ verification, installation, and the live handoff.
   (accepted issue and maintainer approval when required); do not replace the
   stable Herdr install during physical commissioning without a separate
   reviewed upgrade.
+
+## Two-dashboard runtime update — 2026-10-02
+
+- Implemented the combined Omarchy/Agents dashboard and a full Riptide account,
+  ticket, and activity dashboard with a fixed drag/tap switcher. Compact agent
+  pagination retains all agent actions; an actual-click test reaches Agent 11
+  in the 12-agent fixture and returns to page one.
+- Final local gates pass: 142 core Rust tests plus one CLI test, rustfmt,
+  strict workspace Clippy, 28 Python contracts, 137 Qt QML tests, qmllint,
+  ShellCheck, all 31 isolated installer scenarios, generated installed Lua
+  syntax, and staged systemd-unit verification.
+- Independently reviewed and installed 51 runtime files on 2026-10-02 at
+  01:45:21 -0400. Every installed hash matches the stage. Commissioning and
+  the exact-output portal service remain byte-identical. Backups, reviewed
+  manifest, and rollback script are in the task workspace at
+  `work/runtime-update/`; the installed managed manifest is updated.
+- Direct gateway observation is enabled with a private mode-0600 credentials
+  file; trading execution remains disabled. An isolated temporary daemon
+  verified three gateway accounts, three reported nonzero positions, zero
+  orders, CPU/GPU health, audio controls, 22 themes, and two storage mounts.
+  Legacy broker liveness is explicitly unverified. No orders were submitted.
+- The exact DP-2 XENEON display and commissioned EDID remain connected. The
+  commissioned USB touchscreen disconnected at 01:33:06 and is absent; the
+  existing identity gate correctly leaves daemon/portal inactive. The input
+  watcher is active and enabled and will reconcile on reconnect. Physical
+  touch and actual production-layer visual QA await that reconnection.
+- No LG preview, monitor changes, suspend/DPMS tests, or GitHub publication
+  were performed during this update.

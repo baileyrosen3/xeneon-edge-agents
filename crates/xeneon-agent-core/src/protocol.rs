@@ -16,6 +16,10 @@ pub enum CommandError {
     MissingCapability,
     #[error("capability_id is not accepted for this action")]
     UnexpectedCapability,
+    #[error("parameters are required for dashboard actions")]
+    MissingParameters,
+    #[error("parameters are not accepted for this action")]
+    UnexpectedParameters,
 }
 
 pub fn validate_command(command: &PortalCommand) -> Result<(), CommandError> {
@@ -24,6 +28,13 @@ pub fn validate_command(command: &PortalCommand) -> Result<(), CommandError> {
     }
     if command.request_id.trim().is_empty() {
         return Err(CommandError::MissingRequestId);
+    }
+    if matches!(command.action, ActionKind::Omarchy | ActionKind::Trading) {
+        if command.parameters.is_none() {
+            return Err(CommandError::MissingParameters);
+        }
+    } else if command.parameters.is_some() {
+        return Err(CommandError::UnexpectedParameters);
     }
 
     match command.action {
@@ -36,7 +47,9 @@ pub fn validate_command(command: &PortalCommand) -> Result<(), CommandError> {
         | ActionKind::OrderGrouped
         | ActionKind::OrderPriority
         | ActionKind::BackendHerdr
-        | ActionKind::BackendT3code => {
+        | ActionKind::BackendT3code
+        | ActionKind::Omarchy
+        | ActionKind::Trading => {
             if command.agent_id.is_some() {
                 return Err(CommandError::UnexpectedAgentId);
             }
@@ -91,6 +104,7 @@ mod tests {
             agent_id: Some("agent".into()),
             action,
             capability_id: None,
+            parameters: None,
         }
     }
 
@@ -212,5 +226,52 @@ mod tests {
         };
 
         assert!(!command_capability_matches(&command, &agent));
+    }
+
+    #[test]
+    fn dashboard_actions_require_parameters_and_forbid_agent_capabilities() {
+        for action in [ActionKind::Omarchy, ActionKind::Trading] {
+            let mut request = command(action);
+            request.agent_id = None;
+            assert_eq!(
+                validate_command(&request),
+                Err(CommandError::MissingParameters)
+            );
+            request.parameters = Some(serde_json::json!({}));
+            assert_eq!(validate_command(&request), Ok(()));
+            request.agent_id = Some("unrelated-agent".into());
+            assert_eq!(
+                validate_command(&request),
+                Err(CommandError::UnexpectedAgentId)
+            );
+            request.agent_id = None;
+            request.capability_id = Some("agent-approval-capability".into());
+            assert_eq!(
+                validate_command(&request),
+                Err(CommandError::UnexpectedCapability)
+            );
+        }
+    }
+
+    #[test]
+    fn existing_actions_cannot_carry_dashboard_or_arbitrary_shell_parameters() {
+        for action in [
+            ActionKind::Open,
+            ActionKind::RestoreFocus,
+            ActionKind::ChatgptDesktop,
+            ActionKind::VoiceStart,
+        ] {
+            let mut request = command(action);
+            if action != ActionKind::Open {
+                request.agent_id = None;
+            }
+            request.parameters = Some(
+                serde_json::json!({"operation":"shell","command":"touch sentinel","text":"arbitrary terminal input"}),
+            );
+            assert_eq!(
+                validate_command(&request),
+                Err(CommandError::UnexpectedParameters)
+            );
+        }
     }
 }

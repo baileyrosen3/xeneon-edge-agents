@@ -27,6 +27,7 @@ pub struct Config {
     pub screen: ScreenConfig,
     pub desktop: DesktopConfig,
     pub t3code: T3codeConfig,
+    pub trading: crate::trading::TradingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +78,7 @@ impl Default for Config {
             screen: ScreenConfig::default(),
             desktop: DesktopConfig::default(),
             t3code: T3codeConfig::default(),
+            trading: crate::trading::TradingConfig::default(),
         }
     }
 }
@@ -138,6 +140,7 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.trading.validate()?;
         let screen_identity = [
             ("screen.connector", self.screen.connector.as_deref()),
             ("screen.serial", self.screen.serial.as_deref()),

@@ -23,3 +23,14 @@ refresh_ms = 1000
 [desktop]
 herdr_class = "herdr"
 # Production commissioning writes edge_output.
+
+[trading]
+# Connects directly to the Riptide gateway, independently of the desktop app.
+# Execution stays disabled until the server and SIM behavior are commissioned.
+enabled = false
+execution_enabled = false
+# HTTPS only. When omitted, DATA_SERVER_URL is read from credentials_file.
+# server_url = "https://gateway.example.net"
+# A private file containing only DATA_SERVER_URL and DATA_SERVER_TOKEN.
+# Use an absolute path; keep this file mode 0600 and outside Git.
+# credentials_file = "/home/user/.config/xeneon-edge-agents/gateway.env"

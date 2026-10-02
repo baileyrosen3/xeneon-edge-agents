@@ -109,6 +109,8 @@ pub struct TradingPosition {
     pub account_id: String,
     pub symbol: String,
     pub quantity: i64,
+    #[serde(default)]
+    pub can_close: bool,
     pub average_price: Option<f64>,
     pub open_pnl: Option<f64>,
 }
@@ -165,6 +167,10 @@ pub struct TradingSnapshot {
     #[serde(default)]
     pub supports_brackets: bool,
     #[serde(default)]
+    pub supports_close: bool,
+    #[serde(default)]
+    pub supports_reverse: bool,
+    #[serde(default)]
     pub supports_flatten: bool,
     pub message: Option<String>,
     #[serde(default)]
@@ -189,6 +195,8 @@ impl Default for TradingSnapshot {
             broker_connected: false,
             execution_enabled: false,
             supports_brackets: false,
+            supports_close: false,
+            supports_reverse: false,
             supports_flatten: false,
             message: None,
             accounts: Vec::new(),
@@ -933,8 +941,24 @@ fn validate_request(
             {
                 return Err("Selected position is no longer in the current snapshot");
             }
-            if !snapshot.supports_flatten {
+            let supported = match request {
+                TradingRequest::Close { .. } => snapshot.supports_close,
+                TradingRequest::Reverse { .. } => snapshot.supports_reverse,
+                _ => false,
+            };
+            if !supported {
                 return Err("Server-managed position actions are unavailable");
+            }
+            if matches!(request, TradingRequest::Close { .. })
+                && !snapshot.positions.iter().any(|position| {
+                    position.account_id == *account_id
+                        && position.symbol == *symbol
+                        && position.can_close
+                })
+            {
+                return Err(
+                    "Position close has not been verified by the current broker generation",
+                );
             }
         }
         TradingRequest::Flatten { .. } => {
@@ -1056,7 +1080,7 @@ fn legacy_snapshot(
         }).collect(),
         positions: positions.into_iter().map(|position| {
             let quantity = match position.direction { 1=>i64::from(position.size), 2=>-i64::from(position.size), _=>return Err(()) };
-            Ok(TradingPosition { account_id:position.account_id.exact(),symbol:position.symbol,quantity,average_price:position.average_price,open_pnl:None })
+            Ok(TradingPosition { account_id:position.account_id.exact(),symbol:position.symbol,quantity,can_close:false,average_price:position.average_price,open_pnl:None })
         }).collect::<Result<Vec<_>, ()>>()?,
         orders: orders.into_iter().map(|order| {
             let side = match order.side.as_str() { "Buy"=>TradingSide::Buy, "Sell"=>TradingSide::Sell, _=>return Err(()) };
@@ -1184,6 +1208,7 @@ mod tests {
         assert_eq!(snapshot.accounts[0].account_type, "SIM");
         assert!(!snapshot.execution_enabled && !snapshot.broker_connected);
         assert!(!snapshot.supports_brackets && !snapshot.supports_flatten);
+        assert!(!snapshot.supports_close && !snapshot.supports_reverse);
         assert!(snapshot.quotes.is_empty() && snapshot.fills.is_empty());
         let mut accounts: serde_json::Value = serde_json::from_slice(&accounts).unwrap();
         accounts[0]["id"] = serde_json::json!(u64::MAX as f64);
@@ -1194,6 +1219,72 @@ mod tests {
         assert!(
             legacy_snapshot(&serde_json::to_vec(&accounts).unwrap(), &positions, &orders).is_ok()
         );
+    }
+
+    #[test]
+    fn close_reverse_and_flatten_have_independent_fail_closed_capabilities() {
+        let mut snapshot = fixture();
+        snapshot.positions.push(TradingPosition {
+            account_id: snapshot.accounts[0].id.clone(),
+            symbol: "NQZ6".into(),
+            quantity: 1,
+            can_close: true,
+            average_price: Some(20_000.0),
+            open_pnl: None,
+        });
+        let account = snapshot.accounts[0].id.clone();
+        let close = TradingRequest::Close {
+            account_id: account.clone(),
+            symbol: "NQZ6".into(),
+        };
+        let reverse = TradingRequest::Reverse {
+            account_id: account.clone(),
+            symbol: "NQZ6".into(),
+        };
+        let flatten = TradingRequest::Flatten {
+            account_id: account,
+        };
+        assert!(validate_request(&close, &snapshot).is_err());
+        assert!(validate_request(&reverse, &snapshot).is_err());
+        snapshot.supports_close = true;
+        assert!(validate_request(&close, &snapshot).is_ok());
+        assert!(validate_request(&reverse, &snapshot).is_err());
+        assert!(validate_request(&flatten, &snapshot).is_err());
+        snapshot.supports_close = false;
+        snapshot.supports_reverse = true;
+        assert!(validate_request(&close, &snapshot).is_err());
+        assert!(validate_request(&reverse, &snapshot).is_ok());
+        assert!(validate_request(&flatten, &snapshot).is_err());
+    }
+
+    #[test]
+    fn decimal_tick_metadata_does_not_reject_valid_client_limit_price() {
+        let mut snapshot = fixture();
+        snapshot.quotes.push(TradingQuote {
+            symbol: "CLZ6".into(),
+            bid: Some(99.99),
+            ask: Some(100.01),
+            last: Some(100.0),
+            tick_size: Some(f64::from(0.01_f32)),
+            dollars_per_point: Some(1000.0),
+            updated_at_ms: now_ms(),
+        });
+        let request = TradingRequest::Place {
+            account_id: snapshot.accounts[0].id.clone(),
+            symbol: "CLZ6".into(),
+            side: TradingSide::Buy,
+            quantity: 1,
+            order_type: TradingOrderType::Limit,
+            price: Some(100.00),
+            stop_price: None,
+            trail_ticks: None,
+            sl_ticks: None,
+            tp_ticks: None,
+        };
+        assert!(validate_request(&request, &snapshot).is_ok());
+        // The server authoritatively validates grid alignment in fixed units;
+        // the direct client must not reject valid decimal prices by dividing
+        // by tick sizes promoted from instrument catalog f32 values.
     }
 
     #[tokio::test]

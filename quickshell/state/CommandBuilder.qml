@@ -17,7 +17,9 @@ QtObject {
         "order_grouped",
         "order_priority",
         "backend_herdr",
-        "backend_t3code"
+        "backend_t3code",
+        "omarchy",
+        "trading"
     ]
 
     property int requestCounter: 0
@@ -28,7 +30,7 @@ QtObject {
         lastError = ""
     }
 
-    function build(action, agentId, capabilityId, pinnedSequence) {
+    function build(action, agentId, capabilityId, pinnedSequence, parameters) {
         lastError = ""
 
         if (allowedActions.indexOf(action) === -1) {
@@ -55,6 +57,8 @@ QtObject {
             || action === "order_priority"
             || action === "backend_herdr"
             || action === "backend_t3code"
+            || action === "omarchy"
+            || action === "trading"
 
         if (systemAction) {
             if (normalizedAgentId !== ""
@@ -79,6 +83,16 @@ QtObject {
             return null
         }
 
+        var dashboardAction = action === "omarchy" || action === "trading"
+        if (dashboardAction && (parameters === null || typeof parameters !== "object" || Array.isArray(parameters))) {
+            lastError = "Dashboard action requires an operation object"
+            return null
+        }
+        if (!dashboardAction && parameters !== undefined && parameters !== null) {
+            lastError = "Unexpected action parameters"
+            return null
+        }
+
         requestCounter += 1
         var command = {
             "schema_version": 1,
@@ -93,6 +107,9 @@ QtObject {
 
         if (normalizedCapabilityId !== "")
             command.capability_id = normalizedCapabilityId
+
+        if (dashboardAction)
+            command.parameters = parameters
 
         return command
     }

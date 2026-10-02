@@ -259,7 +259,7 @@ reconcile_helper=$temp_dir/xeneon-edge-reconcile
 desktop_entry=$temp_dir/xeneon-edge-agents.desktop
 render_template \
   "$repo_root/config/systemd/user/xeneon-agentd.service.in" "$daemon_unit" \
-  CONFIG_HOME "$config_home" STATE_HOME "$state_home" BIN_HOME "$bin_home"
+  CONFIG_HOME "$config_home" DATA_HOME "$data_home" STATE_HOME "$state_home" BIN_HOME "$bin_home"
 render_template \
   "$repo_root/config/systemd/user/xeneon-edge-portal.service.in" "$portal_unit" \
   CONFIG_HOME "$config_home" STATE_HOME "$state_home" BIN_HOME "$bin_home" \

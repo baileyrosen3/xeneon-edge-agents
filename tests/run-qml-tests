@@ -26,4 +26,5 @@ QT_QPA_PLATFORM=${QT_QPA_PLATFORM:-offscreen} \
   -input quickshell/tests \
   -import quickshell \
   -import quickshell/state \
+  -import quickshell/tests/mocks \
   -v1

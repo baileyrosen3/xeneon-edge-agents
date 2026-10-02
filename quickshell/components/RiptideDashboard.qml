@@ -56,7 +56,7 @@ Item {
     readonly property var closedFills: fills.filter(function (fill) {
         return fill.pnl !== null && fill.pnl !== undefined;
     })
-    readonly property real tickSize: Number(quote.tick_size || 0)
+    readonly property real tickSize: canonicalTick(quote.tick_size)
     readonly property real pointValue: Number(quote.dollars_per_point || 0)
     function find(items, field, value) {
         for (var i = 0; i < items.length; ++i)
@@ -94,6 +94,10 @@ Item {
             parts.push(label + " " + number(order.stop_price !== null && order.stop_price !== undefined ? order.stop_price : order.price) + " ×" + order.quantity);
         }
         return parts.length ? parts.join("  ·  ") : "No working protection reported";
+    }
+    function canonicalTick(value) {
+        var raw = Number(value || 0);
+        return Number.isFinite(raw) && raw > 0 ? Math.round(raw * 100000000) / 100000000 : 0;
     }
     function tickAligned(value) {
         if (!Number.isFinite(value) || value <= 0 || tickSize <= 0)
@@ -232,7 +236,7 @@ Item {
             return;
         var value = Number(editPrice);
         var orderQuote = find(quotes, "symbol", String(editingOrder.symbol)) || ({});
-        var step = Number(orderQuote.tick_size || 0);
+        var step = canonicalTick(orderQuote.tick_size);
         var count = Number(editQuantity);
         if (!Number.isInteger(count) || count < 1 || count > 1000 || !Number.isFinite(value) || value <= 0 || step <= 0 || Math.abs(value / step - Math.round(value / step)) > 0.00001) {
             feedback = "Enter valid quantity and a tick-aligned price";
@@ -339,7 +343,7 @@ Item {
             Text {
                 width: 700
                 anchors.verticalCenter: parent.verticalCenter
-                text: "SERVER " + String(root.trading.connection || "UNCONFIGURED").toUpperCase() + "  ·  RITHMIC " + (root.trading.broker_connected === true ? "CONNECTED" : "OFFLINE")
+                text: "SERVER " + String(root.trading.connection || "UNCONFIGURED").toUpperCase() + "  ·  RITHMIC " + (root.trading.broker_connected === true ? "CONNECTED" : "NOT READY")
                 textFormat: Text.PlainText
                 color: root.current ? root.theme.success : root.theme.needsHelp
                 font.family: "monospace"
@@ -907,7 +911,7 @@ Item {
                                         height: 44
                                         label: root.activityTab === "positions" ? "CLOSE" : "CANCEL"
                                         destructive: true
-                                        enabled: root.canExecute && (root.activityTab === "positions" ? root.trading.supports_flatten === true : root.working(activityCard.record))
+                                        enabled: root.canExecute && (root.activityTab === "positions" ? root.trading.supports_close === true && activityCard.record.can_close === true : root.working(activityCard.record))
                                         onClicked: root.confirm(root.activityTab === "positions" ? "CLOSE POSITION" : "CANCEL ORDER", String(activityCard.record.symbol) + "  ·  account " + root.selectedAccount, root.activityTab === "positions" ? {
                                             action: "close",
                                             account_id: root.selectedAccount,
@@ -925,7 +929,7 @@ Item {
                                         label: "REVERSE"
                                         destructive: true
                                         visible: root.activityTab === "positions"
-                                        enabled: root.canExecute && root.trading.supports_flatten === true
+                                        enabled: root.canExecute && root.trading.supports_reverse === true
                                         onClicked: root.confirm("REVERSE POSITION", "Reverse " + String(activityCard.record.symbol) + " ×" + Math.abs(Number(activityCard.record.quantity)) + " in " + root.selectedAccount + "?", {
                                             action: "reverse",
                                             account_id: root.selectedAccount,
@@ -1167,7 +1171,7 @@ Item {
                         height: 48
                         label: "PRICE − 1 TICK"
                         onClicked: {
-                            var step = Number((root.find(root.quotes, "symbol", String(root.editingOrder.symbol)) || {}).tick_size || 0);
+                            var step = root.canonicalTick((root.find(root.quotes, "symbol", String(root.editingOrder.symbol)) || {}).tick_size);
                             root.editPrice = String(Number(root.editPrice) - step);
                         }
                     }
@@ -1177,7 +1181,7 @@ Item {
                         height: 48
                         label: "PRICE + 1 TICK"
                         onClicked: {
-                            var step = Number((root.find(root.quotes, "symbol", String(root.editingOrder.symbol)) || {}).tick_size || 0);
+                            var step = root.canonicalTick((root.find(root.quotes, "symbol", String(root.editingOrder.symbol)) || {}).tick_size);
                             root.editPrice = String(Number(root.editPrice) + step);
                         }
                     }
