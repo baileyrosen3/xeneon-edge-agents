@@ -592,3 +592,34 @@ verification, installation, and the live handoff.
   are pending. The user's latest hardware brightness is 100, not the former
   95 acceptance baseline; any native test must capture and preserve current
   user values. No hardware writes were made by the UI implementation agent.
+
+### Responsive monitor backend · 2026-10-02
+
+- Native read-only benchmark on the exact commissioned EDGE showed single
+  reads falling from about 866 ms to 40–42 ms with proven initialization reuse
+  and fixed read multiplier 0.25. Process startup alone was about 5 ms. These
+  are read timings, not a claim of physical write or full ACK latency.
+- `monitor.read_sleep_multiplier` is explicit opt-in (default omitted), bounded
+  to 0.25–1.0. A 60-second monotonic, full-Target proof requires a normal complete
+  VCP probe and freshly acquired native MCCS 2.2 capabilities with the CLI
+  capabilities cache disabled. Fast queries never renew that proof. Expiry,
+  target/preset changes, failed or incomplete probes invalidate it.
+- Known-target reads skip repeated compliance initialization. Every change
+  still freshly identifies EDID/serial/bus and reads bounds, RGB preset when
+  relevant, and independent post-write confirmation. Sets retain multiplier
+  1, normal verification, and one write-only attempt; no mutation retry.
+- Accepted user writes cancel only periodic read probes and their read-only
+  finish/metadata work. RAII releases the pending counter on every exit. A real
+  blocked subprocess/flock fixture proves native cancellation and lock release.
+- Dedicated monitor publications own the dashboard field, independent of equal
+  or backward wall clocks. Publications fetch the controller cache only after
+  acquiring the state lock, so a queued old sample cannot revert a new readback
+  or failure. Deterministic regressions cover both publication races.
+- Focused 17 monitor and two runtime cases passed. Independent native review
+  reproduced all 19; ordinary reviewer sandbox had one deferred child-PID
+  disappearance assertion, while lock release and native child validation
+  passed. Full workspace passed 164 core plus one CLI test; Clippy and formatting
+  passed. Independent UI review passed all 19 focused Qt cases.
+- Release installation and fresh-baseline write latency acceptance remain next.
+  User brightness changed to 100 during read-only measurements; never restore
+  the earlier 95 baseline over intervening user changes.

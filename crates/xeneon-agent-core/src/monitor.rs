@@ -9,7 +9,8 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::Stdio,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::atomic::{AtomicUsize, Ordering},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
     io::AsyncReadExt,
@@ -20,6 +21,7 @@ use tokio::{
 
 const MAX_OUTPUT: u64 = 32 * 1024;
 const PRESETS: &[u16] = &[1, 2, 4, 5, 6, 8, 11];
+const PROOF_LIFETIME: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -29,6 +31,8 @@ pub struct MonitorConfig {
     pub writes_enabled: bool,
     pub commissioning_file: Option<PathBuf>,
     pub refresh_ms: u64,
+    /// Host-tested read tuning only; writes retain verified sleep multiplier 1.
+    pub read_sleep_multiplier: Option<f64>,
 }
 impl Default for MonitorConfig {
     fn default() -> Self {
@@ -37,6 +41,7 @@ impl Default for MonitorConfig {
             writes_enabled: false,
             commissioning_file: None,
             refresh_ms: 30_000,
+            read_sleep_multiplier: None,
         }
     }
 }
@@ -47,6 +52,12 @@ impl MonitorConfig {
         }
         if self.refresh_ms < 15_000 || self.refresh_ms > 300_000 {
             bail!("monitor.refresh_ms must be 15000..300000");
+        }
+        if self
+            .read_sleep_multiplier
+            .is_some_and(|value| !value.is_finite() || !(0.25..=1.0).contains(&value))
+        {
+            bail!("monitor.read_sleep_multiplier must be finite and 0.25..1.0");
         }
         if self
             .commissioning_file
@@ -245,6 +256,21 @@ impl Default for Paths {
         }
     }
 }
+#[derive(Debug, Clone)]
+struct InitializationProof {
+    target: Target,
+    verified_at: Instant,
+    capabilities: String,
+}
+/// A queued interactive write cancels only background reads, never mutations.
+struct PendingWrite<'a> {
+    count: &'a AtomicUsize,
+}
+impl Drop for PendingWrite<'_> {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 #[derive(Debug)]
 pub struct MonitorController {
     config: MonitorConfig,
@@ -253,6 +279,9 @@ pub struct MonitorController {
     operation: Mutex<()>,
     snapshot: RwLock<MonitorSnapshot>,
     refresh_requested: Notify,
+    write_requested: Notify,
+    pending_writes: AtomicUsize,
+    initialization: RwLock<Option<InitializationProof>>,
 }
 impl MonitorController {
     pub fn new(config: MonitorConfig) -> Self {
@@ -270,6 +299,9 @@ impl MonitorController {
             operation: Mutex::new(()),
             snapshot: RwLock::new(MonitorSnapshot::default()),
             refresh_requested: Notify::new(),
+            write_requested: Notify::new(),
+            pending_writes: AtomicUsize::new(0),
+            initialization: RwLock::new(None),
         }
     }
     pub fn refresh_interval(&self) -> Duration {
@@ -283,6 +315,10 @@ impl MonitorController {
         self.refresh_requested.notified().await;
     }
     #[cfg(test)]
+    pub(crate) async fn replace_snapshot_for_test(&self, value: MonitorSnapshot) {
+        *self.snapshot.write().await = value;
+    }
+    #[cfg(test)]
     pub(crate) async fn hold_operation_for_test(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.operation.lock().await
     }
@@ -291,6 +327,36 @@ impl MonitorController {
             .await
             .context("Monitor controller is busy; refresh was not queued")?;
         let result = timeout(Duration::from_secs(22), self.refresh_locked()).await;
+        self.finish_refresh(result).await
+    }
+    /// Periodic probes yield their serialization slot immediately to a user
+    /// write. Cancellation can only affect getvcp/capabilities/layout reads.
+    pub async fn refresh_background(&self) {
+        if self.pending_writes.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        let Ok(_guard) = self.operation.try_lock() else {
+            return;
+        };
+        let requested = self.write_requested.notified();
+        tokio::pin!(requested);
+        requested.as_mut().enable();
+        if self.pending_writes.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        tokio::select! {
+            biased;
+            _ = &mut requested => {},
+            _ = async {
+                let result = timeout(Duration::from_secs(22), self.refresh_locked()).await;
+                let _ = self.finish_refresh(result).await;
+            } => {},
+        }
+    }
+    async fn finish_refresh(
+        &self,
+        result: std::result::Result<Result<MonitorSnapshot>, tokio::time::error::Elapsed>,
+    ) -> Result<String> {
         let next = match result {
             Ok(Ok(next)) => next,
             Ok(Err(error)) => self.failed_snapshot(&error.to_string()).await,
@@ -306,9 +372,23 @@ impl MonitorController {
             .unwrap_or_else(|| "Monitor capabilities unavailable".into());
         *self.snapshot.write().await = next;
         if !available {
+            self.invalidate_initialization().await;
             bail!("{reason}");
         }
         Ok("Monitor capabilities refreshed from exact XENEON EDGE".into())
+    }
+    async fn invalidate_initialization(&self) {
+        *self.initialization.write().await = None;
+    }
+    async fn proof_for(&self, target: &Target) -> Option<InitializationProof> {
+        let mut proof = self.initialization.write().await;
+        if proof
+            .as_ref()
+            .is_some_and(|p| p.target != *target || p.verified_at.elapsed() >= PROOF_LIFETIME)
+        {
+            *proof = None;
+        }
+        proof.clone()
     }
     async fn failed_snapshot(&self, reason: &str) -> MonitorSnapshot {
         let mut snapshot = MonitorSnapshot {
@@ -479,6 +559,9 @@ impl MonitorController {
         deadline: Duration,
         mode: OutputMode,
     ) -> Result<String> {
+        self.same_target(target)?;
+        let proven =
+            self.config.read_sleep_multiplier.is_some() && self.proof_for(target).await.is_some();
         let mut fixed = vec![
             "--noconfig".into(),
             "--disable-udf".into(),
@@ -488,8 +571,34 @@ impl MonitorController {
             target.bus.to_string(),
             "--terse".into(),
         ];
+        if !proven && args.first().is_some_and(|a| a == "capabilities") {
+            // A new initialization lease must acquire native capabilities,
+            // not inherit ddcutil's persisted model-level cache.
+            fixed.push("--disable-capabilities-cache".into());
+        }
+        if proven {
+            // Known MCCS 2.2 and compliance came from a complete normal probe,
+            // not from the cached model or a successful individual write.
+            fixed.extend([
+                "--skip-ddc-checks".into(),
+                "--mccs".into(),
+                "2.2".into(),
+                "--disable-dynamic-sleep".into(),
+                "--sleep-multiplier".into(),
+            ]);
+            let multiplier = if args.first().is_some_and(|a| a == "setvcp") {
+                1.0
+            } else {
+                self.config.read_sleep_multiplier.unwrap()
+            };
+            fixed.push(multiplier.to_string());
+        }
         fixed.extend_from_slice(args);
-        run_with_mode(&self.paths.ddcutil, &fixed, deadline, mode).await
+        let result = run_with_mode(&self.paths.ddcutil, &fixed, deadline, mode).await;
+        if result.is_err() {
+            self.invalidate_initialization().await;
+        }
+        result
     }
     async fn refresh_locked(&self) -> Result<MonitorSnapshot> {
         let (target, c) = self.discover()?;
@@ -503,12 +612,16 @@ impl MonitorController {
             refreshed_at_ms: now(),
             ..MonitorSnapshot::default()
         };
-        let readings: Result<(String, Vec<MonitorChoice>)> = async {
+        let readings: Result<(String, Vec<MonitorChoice>, Option<String>)> = async {
             self.device_access(&target)?;
-            let cap = self
-                .ddc(&target, &["capabilities".into()], Duration::from_secs(7))
-                .await
-                .ok();
+            let proof = self.proof_for(&target).await;
+            let cap = match &proof {
+                Some(proof) => Some(proof.capabilities.clone()),
+                None => self
+                    .ddc(&target, &["capabilities".into()], Duration::from_secs(7))
+                    .await
+                    .ok(),
+            };
             self.same_target(&target)?;
             let mut args = vec!["getvcp".into()];
             args.extend(CONTROLS.iter().map(|id| format!("{:02X}", id.code())));
@@ -524,11 +637,27 @@ impl MonitorController {
                 )
                 .await?;
             self.same_target(&target)?;
-            Ok((text, cap.as_deref().map(preset_choices).unwrap_or_default()))
+            let complete = valid_mixed_vcp_batch(&text);
+            if !complete {
+                self.invalidate_initialization().await;
+            }
+            let renewed =
+                if proof.is_none() && cap.as_deref().is_some_and(known_mccs_2_2) && complete {
+                    cap.clone()
+                } else {
+                    None
+                };
+            Ok((
+                text,
+                cap.as_deref().map(preset_choices).unwrap_or_default(),
+                renewed,
+            ))
         }
         .await;
+        let mut renewed = None;
         match readings {
-            Ok((text, choices)) => {
+            Ok((text, choices, proof_cap)) => {
+                renewed = proof_cap;
                 next.controls = CONTROLS
                     .iter()
                     .map(|id| control_from_reply(*id, &text, &choices, self.config.writes_enabled))
@@ -549,6 +678,7 @@ impl MonitorController {
                 };
             }
             Err(error) => {
+                self.invalidate_initialization().await;
                 // Failure to query picture settings does not erase an
                 // independently reverified connected device identity.
                 self.same_identity(&target)?;
@@ -563,6 +693,13 @@ impl MonitorController {
         }
         self.same_identity(&target)?;
         next.refreshed_at_ms = now();
+        if let Some(capabilities) = renewed {
+            *self.initialization.write().await = Some(InitializationProof {
+                target,
+                verified_at: Instant::now(),
+                capabilities,
+            });
+        }
         Ok(next)
     }
     async fn layout(&self, target: &Target, c: &Commissioning, next: &mut MonitorSnapshot) {
@@ -646,11 +783,17 @@ impl MonitorController {
         if !self.config.writes_enabled {
             bail!("Monitor writes are disabled in configuration");
         }
+        self.pending_writes.fetch_add(1, Ordering::AcqRel);
+        let _pending = PendingWrite {
+            count: &self.pending_writes,
+        };
+        self.write_requested.notify_waiters();
         let _guard = timeout(Duration::from_secs(20), self.operation.lock())
             .await
             .context("Monitor controller is busy; write was not queued")?;
         let result = self.write_locked(id, value).await;
         if let Err(error) = &result {
+            self.invalidate_initialization().await;
             let mut s = self.snapshot.write().await;
             s.available = false;
             s.identity_verified = false;
@@ -677,9 +820,13 @@ impl MonitorController {
         self.device_access(&target)?;
         let pre = self.read_one(&target, id).await?;
         let choices = if id == MonitorControlId::ColorPreset {
-            let text = self
-                .ddc(&target, &["capabilities".into()], Duration::from_secs(7))
-                .await?;
+            let text = match self.proof_for(&target).await {
+                Some(proof) => proof.capabilities,
+                None => {
+                    self.ddc(&target, &["capabilities".into()], Duration::from_secs(7))
+                        .await?
+                }
+            };
             preset_choices(&text)
         } else {
             Vec::new()
@@ -771,6 +918,7 @@ impl MonitorController {
             }
         }
         if id == MonitorControlId::ColorPreset {
+            self.invalidate_initialization().await;
             // A preset can restore multiple picture values. Old readings are
             // not editable or presented as current while the worker refreshes.
             for control in snapshot.controls.iter_mut().filter(|c| c.id != id) {
@@ -930,6 +1078,24 @@ fn apply_rgb_gate(controls: &mut [MonitorControl], writes: bool) {
             c.reason = None;
         }
     }
+}
+fn known_mccs_2_2(text: &str) -> bool {
+    if text.len() > MAX_OUTPUT as usize || !text.is_ascii() {
+        return false;
+    }
+    let mut depth = 0usize;
+    for byte in text.bytes() {
+        match byte {
+            b'(' => depth += 1,
+            b')' if depth > 0 => depth -= 1,
+            b')' => return false,
+            _ => {}
+        }
+    }
+    depth == 0
+        && text.matches("mccs_ver(").count() == 1
+        && text.contains("mccs_ver(2.2)")
+        && !preset_choices(text).is_empty()
 }
 fn preset_choices(text: &str) -> Vec<MonitorChoice> {
     if text.len() > MAX_OUTPUT as usize {
@@ -1199,17 +1365,21 @@ mod tests {
                 &script,
                 format!(
                     r#"#!/usr/bin/python3
-import json,sys,time,pathlib,signal,os
+import json,sys,time,pathlib,signal,os,fcntl
 base=pathlib.Path({base})
 a=sys.argv[1:]
+lock=(base/'native_lock').open('a');fcntl.flock(lock,fcntl.LOCK_EX)
 with (base/'log').open('a') as f: f.write(json.dumps(a)+'\n')
 s=json.loads((base/'state.json').read_text())
 if 'capabilities' in a:
- print('(prot(monitor)model(RTK)cmds(01 02 03)vcp(10 12 14(01 02 04 05 06 08 0B) 16 18 1A 87))')
+ print('(prot(monitor)model(RTK)mccs_ver(%s)cmds(01 02 03)vcp(10 12 14(01 02 04 05 06 08 0B) 16 18 1A 87))'%s.get('mccs','2.2'))
 elif 'getvcp' in a:
  codes=a[a.index('getvcp')+1:]
+ if len(codes)>1 and s.get('batch_delay',0):
+  (base/'batch_started').write_text('started');(base/'batch_pid').write_text(str(os.getpid()));time.sleep(s['batch_delay'])
  if len(codes)>1 and s.get('batch_empty',False):sys.exit(s.get('batch_exit',1))
  for c in codes:
+  if c==s.get('omit',''):continue
   if c=='14': print('VCP 14 CNC x00 x0b x00 x%02x'%s['preset'])
   elif c=='10': print('VCP 10 C %d %d'%(s['brightness'],s['maximum']))
   elif c=='6B': print('VCP 6B ERR')
@@ -1270,6 +1440,241 @@ else: sys.exit(1)
                 .filter(|a| a.contains(&"setvcp".into()))
                 .count()
         }
+    }
+    #[test]
+    fn read_tuning_is_explicit_and_capabilities_must_prove_actual_mccs() {
+        assert!(MonitorConfig::default().read_sleep_multiplier.is_none());
+        for value in [0.0, 0.24, 1.01, f64::INFINITY, f64::NAN] {
+            assert!(
+                MonitorConfig {
+                    read_sleep_multiplier: Some(value),
+                    ..MonitorConfig::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        assert!(
+            MonitorConfig {
+                read_sleep_multiplier: Some(0.25),
+                ..MonitorConfig::default()
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(known_mccs_2_2("(mccs_ver(2.2)vcp(14(01 0B)))"));
+        for invalid in [
+            "(mccs_ver(2.1)vcp(14(01 0B)))",
+            "(mccs_ver(2.2)vcp(14(01 0B))",
+            "(mccs_ver(2.2)mccs_ver(2.2)vcp(14(01 0B)))",
+            "(model(2.2)vcp(14(01 0B)))",
+        ] {
+            assert!(!known_mccs_2_2(invalid));
+        }
+    }
+    #[tokio::test]
+    async fn proven_fast_path_retains_fresh_bounds_rgb_preset_and_verified_write() {
+        let mut f = Fixture::new(true);
+        f.controller.config.read_sleep_multiplier = Some(0.25);
+        f.controller.refresh().await.unwrap();
+        let cold = f.log();
+        assert!(
+            cold.iter()
+                .all(|a| !a.contains(&"--skip-ddc-checks".into()))
+        );
+        assert!(
+            cold.iter()
+                .find(|a| a.contains(&"capabilities".into()))
+                .unwrap()
+                .contains(&"--disable-capabilities-cache".into())
+        );
+        let verified_at = f
+            .controller
+            .initialization
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .verified_at;
+        // External range change must be freshly observed, not taken from cache.
+        f.change("maximum", json!(200));
+        f.controller.brightness_percent(50).await.unwrap();
+        let log = f.log();
+        let hot = &log[cold.len()..];
+        assert_eq!(hot.len(), 3); // fresh pre, one normally verified set, independent post
+        for a in hot {
+            assert!(a.contains(&"--skip-ddc-checks".into()));
+            assert!(a.windows(2).any(|v| v == ["--mccs", "2.2"]));
+            assert!(!a.contains(&"--noverify".into()));
+            assert!(a.windows(2).any(|v| v == ["--maxtries", "1,2,2"]));
+            let sleep = if a.contains(&"setvcp".into()) {
+                "1"
+            } else {
+                "0.25"
+            };
+            assert!(a.windows(2).any(|v| v == ["--sleep-multiplier", sleep]));
+        }
+        assert_eq!(f.controller.snapshot().await.controls[0].current, Some(100));
+        assert_eq!(
+            f.controller
+                .initialization
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .verified_at,
+            verified_at
+        );
+        f.controller.refresh().await.unwrap();
+        assert_eq!(
+            f.controller
+                .initialization
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .verified_at,
+            verified_at
+        );
+        let before = f.log().len();
+        f.controller
+            .set(MonitorControlId::RedGain, 127)
+            .await
+            .unwrap();
+        let log = f.log();
+        let codes: Vec<_> = log[before..]
+            .iter()
+            .map(|a| {
+                a.iter()
+                    .position(|s| s == "getvcp" || s == "setvcp")
+                    .map(|i| (&a[i], &a[i + 1]))
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            codes
+                .iter()
+                .map(|(c, v)| (c.as_str(), v.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("getvcp", "16"),
+                ("getvcp", "14"),
+                ("setvcp", "16"),
+                ("getvcp", "16"),
+                ("getvcp", "14")
+            ]
+        );
+        f.change("omit", json!("12"));
+        f.controller.refresh().await.unwrap();
+        assert!(f.controller.initialization.read().await.is_none());
+        f.change("omit", json!(""));
+        f.controller.refresh().await.unwrap();
+        f.change("ignore", json!(true));
+        assert!(
+            f.controller
+                .set(MonitorControlId::Brightness, 99)
+                .await
+                .is_err()
+        );
+        assert!(f.controller.initialization.read().await.is_none());
+        let before = f.log().len();
+        f.controller.refresh().await.unwrap();
+        assert!(
+            f.log()[before..]
+                .iter()
+                .all(|a| !a.contains(&"--skip-ddc-checks".into()))
+        );
+    }
+    #[tokio::test]
+    async fn expired_target_and_preset_proofs_cannot_enable_fast_initialization() {
+        let mut f = Fixture::new(true);
+        f.controller.config.read_sleep_multiplier = Some(0.25);
+        f.change("mccs", json!("2.1"));
+        f.controller.refresh().await.unwrap();
+        assert!(f.controller.initialization.read().await.is_none());
+        f.change("mccs", json!("2.2"));
+        f.controller.refresh().await.unwrap();
+        f.controller
+            .initialization
+            .write()
+            .await
+            .as_mut()
+            .unwrap()
+            .verified_at = Instant::now() - PROOF_LIFETIME;
+        let before = f.log().len();
+        f.controller.refresh().await.unwrap();
+        assert!(
+            f.log()[before..]
+                .iter()
+                .all(|a| !a.contains(&"--skip-ddc-checks".into()))
+        );
+        let (mut target, _) = f.controller.discover().unwrap();
+        target.bus = 13;
+        assert!(f.controller.proof_for(&target).await.is_none());
+        f.controller.refresh().await.unwrap();
+        f.controller
+            .set(MonitorControlId::ColorPreset, 11)
+            .await
+            .unwrap();
+        assert!(f.controller.initialization.read().await.is_none());
+    }
+    #[tokio::test]
+    async fn interactive_write_preempts_only_background_reads_and_pending_count_is_raii() {
+        let mut f = Fixture::new(true);
+        f.controller.config.read_sleep_multiplier = Some(0.25);
+        f.controller.refresh().await.unwrap();
+        f.change("batch_delay", json!(2));
+        let marker = f.root.path().join("batch_started");
+        let controller = std::sync::Arc::new(f.controller);
+        let background = {
+            let controller = controller.clone();
+            tokio::spawn(async move { controller.refresh_background().await })
+        };
+        timeout(Duration::from_secs(2), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let child_pid = fs::read_to_string(marker.with_file_name("batch_pid")).unwrap();
+        let child_proc = PathBuf::from(format!("/proc/{child_pid}"));
+        assert!(child_proc.exists());
+        let started = Instant::now();
+        controller
+            .set(MonitorControlId::Brightness, 94)
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "background read blocked interactive write"
+        );
+        background.await.unwrap();
+        timeout(Duration::from_secs(1), async {
+            while child_proc.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("cancelled native read child must be killed and reaped");
+        assert_eq!(controller.pending_writes.load(Ordering::Acquire), 0);
+        assert_eq!(controller.snapshot().await.controls[0].current, Some(94));
+        let guard = controller.operation.lock().await;
+        let queued = {
+            let controller = controller.clone();
+            tokio::spawn(async move { controller.set(MonitorControlId::Brightness, 93).await })
+        };
+        timeout(Duration::from_secs(1), async {
+            while controller.pending_writes.load(Ordering::Acquire) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        queued.abort();
+        let _ = queued.await;
+        assert_eq!(controller.pending_writes.load(Ordering::Acquire), 0);
+        drop(guard);
     }
     #[test]
     fn vcp_reply_requires_exact_feature_unique_row_and_valid_bounds() {

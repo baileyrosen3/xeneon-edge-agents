@@ -311,8 +311,9 @@ impl DaemonRuntime {
         timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             timer.tick().await;
-            let sample = self.omarchy.lock().await.sample().await;
+            let mut sample = self.omarchy.lock().await.sample().await;
             let mut state = self.state.write().await;
+            retain_latest_monitor(&mut sample, &state.snapshot.omarchy);
             state.snapshot.omarchy = sample;
             state.snapshot.generated_at_ms = now_ms();
             drop(state);
@@ -321,8 +322,11 @@ impl DaemonRuntime {
     }
 
     async fn publish_monitor(&self) {
-        let sample = self.monitor.snapshot().await;
+        // Fetch the controller-owned cache at the publication point. Reading
+        // it before waiting for state would let a delayed publisher revert a
+        // later write/readback. This clone never performs hardware work.
         let mut state = self.state.write().await;
+        let sample = self.monitor.snapshot().await;
         state.snapshot.omarchy.edge_brightness = crate::omarchy::brightness_projection(&sample);
         state.snapshot.omarchy.monitor = sample;
         state.snapshot.generated_at_ms = now_ms();
@@ -339,7 +343,7 @@ impl DaemonRuntime {
                 _ = self.monitor.wait_for_refresh() => {},
             }
             // Slow DDC discovery never holds the desktop or PC-health collector.
-            let _ = self.monitor.refresh().await;
+            self.monitor.refresh_background().await;
             self.publish_monitor().await;
         }
     }
@@ -1746,6 +1750,18 @@ fn now_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+// A desktop sample may finish after a monitor action publishes its readback.
+// Merge the later monitor observation instead of reverting it with PC data.
+fn retain_latest_monitor(
+    sample: &mut crate::omarchy::OmarchySnapshot,
+    latest: &crate::omarchy::OmarchySnapshot,
+) {
+    // The dedicated worker/action publisher owns this field. Wall-clock
+    // timestamps are display metadata, not authority or ordering tokens.
+    sample.monitor = latest.monitor.clone();
+    sample.edge_brightness = crate::omarchy::brightness_projection(&sample.monitor);
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::{fs::PermissionsExt, net::UnixListener as StdUnixListener};
@@ -1753,6 +1769,60 @@ mod tests {
     use super::*;
     use crate::model::AgentView;
     use crate::voice::VoiceController;
+
+    #[tokio::test]
+    async fn queued_monitor_publication_uses_owner_cache_at_commit() {
+        let (runtime, _) = DaemonRuntime::new(Config::default()).unwrap();
+        let runtime = Arc::new(runtime);
+        runtime
+            .monitor
+            .replace_snapshot_for_test(crate::monitor::MonitorSnapshot {
+                refreshed_at_ms: 300,
+                reason: Some("older observation".into()),
+                ..Default::default()
+            })
+            .await;
+        let guard = runtime.state.write().await;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let publishing = {
+            let runtime = runtime.clone();
+            let started = started.clone();
+            tokio::spawn(async move {
+                started.notify_one();
+                runtime.publish_monitor().await;
+            })
+        };
+        started.notified().await;
+        let latest = crate::monitor::MonitorSnapshot {
+            refreshed_at_ms: 200,
+            reason: Some("latest failure after clock rollback".into()),
+            ..Default::default()
+        };
+        runtime
+            .monitor
+            .replace_snapshot_for_test(latest.clone())
+            .await;
+        drop(guard);
+        publishing.await.unwrap();
+        assert_eq!(runtime.state.read().await.snapshot.omarchy.monitor, latest);
+    }
+
+    #[test]
+    fn late_desktop_sample_cannot_revert_monitor_readback_or_failure() {
+        for (sample_time, published_time) in [(100, 200), (200, 200), (300, 200)] {
+            let mut late = crate::omarchy::OmarchySnapshot::default();
+            late.monitor.refreshed_at_ms = sample_time;
+            let mut published = late.clone();
+            published.monitor.refreshed_at_ms = published_time;
+            published.monitor.reason = Some("newer owner observation".into());
+            retain_latest_monitor(&mut late, &published);
+            assert_eq!(late.monitor, published.monitor);
+            published.monitor.reason = Some("write outcome unconfirmed".into());
+            published.monitor.available = false;
+            retain_latest_monitor(&mut late, &published);
+            assert_eq!(late.monitor, published.monitor);
+        }
+    }
 
     #[test]
     fn socket_binding_refuses_regular_file() {

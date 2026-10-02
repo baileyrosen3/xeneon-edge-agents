@@ -41,4 +41,6 @@ enabled = true
 # Explicit user opt-in after reviewed installation; never inherited from legacy DDC flags.
 writes_enabled = false
 refresh_ms = 30000
+# Optional host-tested read tuning, after native probe/write acceptance:
+# read_sleep_multiplier = 0.25
 # commissioning_file = "/absolute/path/to/xeneon-edge-agents/commissioning.toml"
