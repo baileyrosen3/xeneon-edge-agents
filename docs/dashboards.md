@@ -55,6 +55,13 @@ bounded DDC calls, and readback. The UI cannot select an arbitrary bus or VCP
 code. Factory reset, input switching, power control, display-mode changes, and
 touch calibration are not exposed by this panel.
 
+The production portal also exposes the local UI-only IPC target
+`xeneonMonitor`, with `openMonitor` and `closeMonitor`. It changes only the
+visibility of this existing overlay. Select the production service's exact
+Quickshell process using `quickshell ipc --pid PID call xeneonMonitor openMonitor`;
+use `closeMonitor` to dismiss it. Preview windows do not register this target,
+and it exposes no hardware mutation methods.
+
 The `[monitor]` configuration separates observation (`enabled`) from writes
 (`writes_enabled`). Writes default to false. `refresh_ms` sets the bounded
 background observation interval, and optional `commissioning_file` selects the

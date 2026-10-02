@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import Quickshell.Wayland
 import "components"
 
@@ -94,6 +95,7 @@ PanelWindow {
     }
 
     PortalViewport {
+        id: viewport
         anchors.fill: parent
         store: root.store
         bridge: root.bridge
@@ -104,5 +106,17 @@ PanelWindow {
         reducedMotion: root.reducedMotion
         previewMode: false
         hostName: root.hostName
+    }
+
+    IpcHandler {
+        target: "xeneonMonitor"
+        enabled: root.recoveryVisible && !root.awaitingRecovery
+        function openMonitor(): void {
+            root.activity.noteUserActivity()
+            viewport.monitorSettingsOpen = true
+        }
+        function closeMonitor(): void {
+            viewport.monitorSettingsOpen = false
+        }
     }
 }

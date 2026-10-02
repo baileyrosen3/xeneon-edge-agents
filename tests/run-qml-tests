@@ -5,9 +5,18 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 cd "$repo_root"
 
+qml_linter=${QMLLINT:-/usr/lib/qt6/bin/qmllint}
+if [[ ! -x "$qml_linter" ]]; then
+  qml_linter=$(command -v qmllint || true)
+fi
+[[ -n "$qml_linter" && -x "$qml_linter" ]] || {
+  printf 'error: qmllint was not found\n' >&2
+  exit 1
+}
+
 find quickshell -name '*.qml' -type f -print0 |
   sort -z |
-  xargs -0 qmllint -I quickshell
+  xargs -0 "$qml_linter" -I quickshell
 
 PYTHONDONTWRITEBYTECODE=1 \
   python -m unittest discover -s quickshell/tests -p 'test_*.py' -v

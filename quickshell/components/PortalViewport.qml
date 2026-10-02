@@ -14,6 +14,7 @@ Item {
     property bool restoreVoiceFocus: false
     property bool previewMicroOpen: false
     property string hostName: "LOCAL"
+    property alias monitorSettingsOpen: dashboard.monitorSettingsOpen
 
     readonly property real designWidth: 2560
     readonly property real designHeight: 720
@@ -40,6 +41,7 @@ Item {
         transformOrigin: Item.TopLeft
 
         DashboardView {
+            id: dashboard
             anchors.fill: parent
             store: root.store
             bridge: root.bridge
