@@ -27,37 +27,37 @@ Item {
             key: "cpu",
             label: "CPU",
             unit: "%",
-            color: theme.blue
+            colorRole: "blue"
         },
         {
             key: "gpu",
             label: "GPU",
             unit: "%",
-            color: theme.magenta
+            colorRole: "magenta"
         },
         {
             key: "memory",
             label: "MEMORY",
             unit: "%",
-            color: theme.cyan
+            colorRole: "cyan"
         },
         {
             key: "cpu_temperature",
             label: "CPU TEMP",
             unit: "°C",
-            color: theme.orange
+            colorRole: "orange"
         },
         {
             key: "gpu_temperature",
             label: "GPU TEMP",
             unit: "°C",
-            color: theme.yellow
+            colorRole: "yellow"
         },
         {
             key: "network_down",
             label: "NETWORK ↓",
             unit: "",
-            color: theme.green
+            colorRole: "green"
         }
     ]
     function metric(key) {
@@ -166,7 +166,11 @@ Item {
             Repeater {
                 model: root.metrics
                 DashboardCard {
+                    id: metricCard
                     required property var modelData
+                    readonly property var definition: modelData || ({})
+                    readonly property string metricKey: String(definition.key || "")
+                    objectName: "omarchyMetric_" + metricKey
                     theme: root.theme
                     width: (root.width - 56) / 3
                     height: 86
@@ -175,35 +179,38 @@ Item {
                         anchors.margins: 12
                         spacing: 6
                         Text {
-                            text: modelData.label
+                            text: String(metricCard.definition.label || "")
                             textFormat: Text.PlainText
                             color: root.theme.textMuted
                             font.family: "monospace"
                             font.pixelSize: 12
                         }
                         Text {
-                            text: root.metricLabel(modelData.key, modelData.unit)
+                            text: root.metricLabel(metricCard.metricKey, String(metricCard.definition.unit || ""))
                             textFormat: Text.PlainText
-                            color: root.metric(modelData.key) === null ? root.theme.textMuted : root.theme.textPrimary
+                            color: root.metric(metricCard.metricKey) === null ? root.theme.textMuted : root.theme.textPrimary
                             font.family: "monospace"
                             font.pixelSize: 25
                             font.weight: Font.DemiBold
                         }
                     }
                     Canvas {
+                        objectName: "omarchyHistory_" + metricCard.metricKey
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         height: 12
-                        property var values: root.histories[modelData.key] || []
+                        property var values: root.histories[metricCard.metricKey] || []
+                        property color lineColor: root.theme[metricCard.definition.colorRole] || root.theme.accent
                         onValuesChanged: requestPaint()
+                        onLineColorChanged: requestPaint()
                         onPaint: {
                             var ctx = getContext("2d");
                             ctx.clearRect(0, 0, width, height);
                             if (values.length < 2)
                                 return;
-                            var maxValue = modelData.key.indexOf("network_") === 0 ? Math.max(1, ...values) : 100;
-                            ctx.strokeStyle = String(modelData.color);
+                            var maxValue = metricCard.metricKey.indexOf("network_") === 0 ? Math.max(1, ...values) : 100;
+                            ctx.strokeStyle = String(lineColor);
                             ctx.lineWidth = 1.5;
                             ctx.beginPath();
                             for (var i = 0; i < values.length; ++i) {
