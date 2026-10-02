@@ -666,6 +666,30 @@ verification, installation, and the live handoff.
   lifecycle fixtures pass 31 cases. Independent source review approved the
   final socket-only helper, activation ordering, exact active display and
   degraded touch path and independently reproduced all 13 startup fixtures.
-  Shell syntax, Shellcheck with library definitions and diff checks pass. These are source/fixture results, not a
-  claim of successful physical boot or touch verification. The user has left
-  the EDGE output disabled; installed acceptance must preserve that choice.
+  Shell syntax, Shellcheck with library definitions and diff checks pass. These
+  are source/fixture results, not a claim of successful physical boot or touch
+  verification.
+
+### Startup install attempt · 2026-10-02 (13:40)
+
+- Re-ran the gates from the moved clone: 13 startup fixtures, 31 installer/Lua
+  lifecycle scenarios, `luac -p` on the generated module through those
+  scenarios, and ShellCheck 0.11.0 on the helper, reconciler, installer, and
+  checker.
+- Live helper smoke against the real session sockets with a stubbed systemctl:
+  the ordered `import-environment` -> `start xeneon-edge-input.path` ->
+  `is-active` -> `--no-block start xeneon-edge-reconcile.service` sequence
+  exits 0; a failing watcher check exits 1 before queueing reconciliation; the
+  live transaction gate makes it exit 0 without any call. No service was
+  started or changed by these runs.
+- Live `scripts/check.sh` reports the exact production output identity (DP-2)
+  and the Hyprland serial/model as OK, but the configured Hyprland touch
+  device and the USB touchscreen identity are absent, so production
+  commissioning fails closed and nothing installed. The EDGE video link is up
+  at 2560x720 while its USB touchscreen is unplugged, which matches the boot
+  log's repeated `5-1.4` disconnects.
+- The installed tree still carries the pre-`b14f5e7` module and reconciler and
+  has no `xeneon-edge-session`; that is expected until the commissioned
+  touchscreen is present. The `/run/user/1000/xeneon-edge-agents-uninstalling`
+  diagnostic pause file is still in place, so the paused state is unchanged.
+  Do not claim installed acceptance for this checkpoint.
