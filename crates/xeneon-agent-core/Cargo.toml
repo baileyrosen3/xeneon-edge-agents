@@ -6,6 +6,9 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+futures-util.workspace = true
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
 anyhow.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

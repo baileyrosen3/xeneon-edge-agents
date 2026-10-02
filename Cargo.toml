@@ -12,6 +12,9 @@ edition = "2024"
 rust-version = "1.88"
 
 [workspace.dependencies]
+futures-util = "0.3.31"
+reqwest = { version = "0.12.25", default-features = false, features = ["json", "rustls-tls"] }
+tokio-tungstenite = { version = "0.27.0", features = ["rustls-tls-webpki-roots"] }
 anyhow = "1.0.100"
 clap = { version = "4.5.54", features = ["derive", "env"] }
 serde = { version = "1.0.228", features = ["derive"] }
