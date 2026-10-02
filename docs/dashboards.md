@@ -60,7 +60,8 @@ The production portal also exposes the local UI-only IPC target
 visibility of this existing overlay. Select the production service's exact
 Quickshell process using `quickshell ipc --pid PID call xeneonMonitor openMonitor`;
 use `closeMonitor` to dismiss it. Preview windows do not register this target,
-and it exposes no hardware mutation methods.
+and it exposes no hardware mutation methods. The interface follows the
+[Quickshell IPC handler documentation](https://quickshell.org/docs/v0.2.0/types/Quickshell.Io/IpcHandler/).
 
 The `[monitor]` configuration separates observation (`enabled`) from writes
 (`writes_enabled`). Writes default to false. `refresh_ms` sets the bounded

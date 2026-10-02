@@ -534,17 +534,44 @@ verification, installation, and the live handoff.
 
 ## Monitor hardware panel — 2026-10-02
 
-- UI branch `local/monitor-settings-ui` adds a global Monitor overlay on both
-  dashboards, capability-driven raw hardware controls, integer touch keypad,
-  exact identity/display/touch diagnostics, and release-only writes. Pending
-  commands require a successful result plus newer matching hardware readback;
-  failures/timeouts require explicit refresh and never resend a mutation.
-- Current read-only exact-EDGE probes confirm brightness 95/100,
-  contrast 50/100, RGB 151/127/139 out of 255, sharpness 2/4, and User 1 preset.
-  The seven advertised preset values are 1, 2, 4, 5, 6, 8, 11. Separate DDC backlight
-  is unsupported and stays disabled. No setting writes have been performed.
-- UI peer review approved; combined Qt/Python and final installation checks
-  follow integration. Synthetic fixture screenshot is separate from native
-  hardware acceptance. A new reversible stage under `work/monitor-update/`
-  will preserve commissioning, credentials, read-only trading, and unrelated
-  personal configuration while adding only the monitor controller settings.
+- Added a global Monitor overlay on both dashboards, capability-driven raw
+  hardware controls, integer touch keypad, exact device/display/touch
+  diagnostics, and release-only writes. Commands require a successful result
+  plus newer matching hardware readback; errors require explicit refresh and
+  never resend a mutation. Production-only local IPC opens/closes this existing
+  overlay without hardware actions or an additional window.
+- Source checkpoints: `d04a4ad` UI, `c117d49` hardware backend, `f0b1f17` local
+  menu IPC/Qt6 lint runner, `d586e22` bounded error presentation, and `beb972f`
+  native mixed-get handling. The last fix accepts exit one only for a complete,
+  uniquely validated read-only VCP batch with both values and unsupported ERR
+  rows. Writes, fatal/malformed reads, timeouts, and signals remain strict.
+- Final source gates pass 158 core Rust tests plus one CLI test, workspace
+  Clippy/rustfmt, 28 Python contracts, 150 Qt QML tests, qmllint, ShellCheck,
+  Lua syntax, 31 isolated installer scenarios, and seven independent host-update
+  recovery fixtures. Backend, QML, IPC, and concrete stages received independent
+  review. Source edits still require rebuilding/reinstalling the copied runtime.
+- Reviewed reversible installations are retained under `work/monitor-update/`
+  and `work/monitor-read-update/`. The latter guards all 54 runtime targets and
+  replaces only two binaries, the diagnostic QML, and the managed manifest.
+  Personal configuration, private mode-0600 credentials, the daemon profile,
+  exact output/touch commissioning, and unrelated ownership remain preserved.
+  Monitor observation and writes are explicitly enabled; trading remains
+  read-only. Lifecycle gates prevent hotplug from starting a partial update;
+  rollback restores the watcher before fresh exact-identity reconciliation.
+- Native installed-daemon reads verify exact DP-2, serial 035926215698, the
+  commissioned EDID, and bus 12. Seven writable controls expose brightness
+  95/100, contrast 50/100, RGB 151/127/139 out of 255, sharpness 2/4, and
+  preset 11 (User 1). Seven advertised preset choices are 1, 2, 4, 5, 6, 8, 11.
+  Independent DDC backlight is unsupported. Display status is 2560×720 at
+  60.266 Hz, scale 2.5, transform 0; the commissioned touchscreen is connected.
+- One typed native brightness write changed 95 to 94 and confirmed readback;
+  one typed write restored 94 to 95 and confirmed readback. Three/five snapshots
+  streamed during those pending commands. No retries, other hardware changes,
+  or trading mutations were sent. Independent direct post-restoration DDC reads
+  confirm every baseline value, exact EDID/bus, all 54 installed files/modes, and
+  all 103 implementation source hashes. Both services and the input watcher are
+  active, reconciliation succeeded, and Hyprland reports no configuration errors.
+- Actual production menu visual evidence is saved outside the clone at
+  `outputs/monitor-settings-live.png`. The EDGE has exactly one portal layer,
+  other outputs have none, and no LG preview was created. Physical finger-touch,
+  hotplug, DPMS, and suspend acceptance remain separate tests.
