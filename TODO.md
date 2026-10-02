@@ -588,10 +588,13 @@ verification, installation, and the live handoff.
   replayed. Backend review approves the QML scheduler and target/read display.
 - Source checks pass 157 Qt tests, 28 Python contracts, changed QML lint, and
   diff checks. An independent focused monitor run passes all 19 cases.
-- Native latency optimization, reviewed release installation, and acceptance
-  are pending. The user's latest hardware brightness is 100, not the former
-  95 acceptance baseline; any native test must capture and preserve current
-  user values. No hardware writes were made by the UI implementation agent.
+- Reviewed responsive installation and native acceptance completed from
+  `6178f4e`: all 54 installed targets and 103 production source hashes match.
+  The fresh user baseline 100 was nudged to 99 and confirmed in 252.4 ms, then
+  guarded restoration to 100 confirmed in 251.8 ms. The UI shows SET immediately
+  and keeps confirmed READ separate. No retries or other hardware changes.
+  Runtime backup is `work/monitor-live-update`; the actual production menu is
+  open on DP-2, with `outputs/monitor-settings-live.png` refreshed after restore.
 
 ### Responsive monitor backend · 2026-10-02
 
@@ -620,6 +623,23 @@ verification, installation, and the live handoff.
   disappearance assertion, while lock release and native child validation
   passed. Full workspace passed 164 core plus one CLI test; Clippy and formatting
   passed. Independent UI review passed all 19 focused Qt cases.
-- Release installation and fresh-baseline write latency acceptance remain next.
-  User brightness changed to 100 during read-only measurements; never restore
-  the earlier 95 baseline over intervening user changes.
+- Reviewed `work/monitor-live-update/` installed the clean `6178f4e` release
+  and live slider assets. All 54 targets and 103 implementation sources were
+  verified; the only config migration adds explicit read multiplier 0.25.
+  Commissioning, trading execution-disabled state, private credentials, and
+  other personal configuration remain preserved.
+- Native acceptance acquired a fresh exact DP-2/bus-12 baseline of 100/100.
+  One typed change to 99 confirmed hardware readback in 252.4 ms. Another fresh
+  read still found this test value and unchanged maximum, so one typed restore
+  to 100 confirmed in 251.8 ms. Final fresh refresh verified 100/100. No mutation
+  was retried; normalized snapshots arrived during both commands.
+- These timings measure full confirmed ACK/readback, about a quarter second.
+  Immediate SET feedback is independently validated in the live UI. The
+  native set-process observer was unavailable in the tool namespace, so no
+  separate physical panel onset or sub-200-ms hardware claim is made.
+  New cold capabilities acquisition was independently measured at 5581.4 ms,
+  within the 7-second deadline; those normal probes establish the bounded proof.
+- Scoped evidence is outside the clone in `work/monitor-write-latency.json` and
+  `work/monitor-cold-capabilities.json`. The acceptance script stores only
+  monitor state/action results and performs restoration only after a fresh
+  unchanged-value check; hardware compare-and-set is unavailable.
