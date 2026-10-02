@@ -6,7 +6,10 @@ use std::{
     fs::File,
     io::{BufRead, BufReader, Read},
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -24,6 +27,7 @@ const MAX_CREDENTIAL_BYTES: u64 = 64 * 1024;
 const STALE_AFTER: Duration = Duration::from_secs(20);
 const RECONCILE_EVERY: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -274,6 +278,7 @@ struct TradingState {
     // Prevent accidental local redispatch even if callers reuse an ID. Never
     // evict IDs during a daemon lifetime; fail closed at the bounded limit.
     submitted: std::collections::HashSet<Uuid>,
+    legacy_mode: bool,
 }
 
 #[derive(Clone)]
@@ -282,6 +287,15 @@ pub struct TradingController {
     endpoint: Option<Arc<Endpoint>>,
     client: Option<Client>,
     state: Arc<Mutex<TradingState>>,
+    command_in_flight: Arc<AtomicBool>,
+    command_timeout: Duration,
+}
+
+struct CommandInFlight(Arc<AtomicBool>);
+impl Drop for CommandInFlight {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 impl TradingController {
@@ -323,7 +337,10 @@ impl TradingController {
                 stream_connected: false,
                 stream_observed_at: None,
                 submitted: Default::default(),
+                legacy_mode: false,
             })),
+            command_in_flight: Arc::new(AtomicBool::new(false)),
+            command_timeout: COMMAND_TIMEOUT,
         }
     }
 
@@ -341,11 +358,17 @@ impl TradingController {
                 .send()
                 .await
                 .map_err(|_| ())?;
+            if response.status() == reqwest::StatusCode::NOT_FOUND {
+                let snapshot = self.legacy_sample().await?;
+                self.state.lock().await.legacy_mode = true;
+                return self.accept(snapshot).await;
+            }
             if !response.status().is_success() {
                 return Err(());
             }
             let body = bounded_body(response).await?;
             let snapshot = parse_snapshot(&body)?;
+            self.state.lock().await.legacy_mode = false;
             self.accept(snapshot).await
         }
         .await;
@@ -359,16 +382,51 @@ impl TradingController {
         self.current().await
     }
 
+    async fn legacy_sample(&self) -> Result<TradingSnapshot, ()> {
+        let accounts = self.legacy_get("api/rithmic/accounts");
+        let positions = self.legacy_get("api/rithmic/positions");
+        let orders = self.legacy_get("api/rithmic/orders");
+        let (accounts, positions, orders) = tokio::try_join!(accounts, positions, orders)?;
+        legacy_snapshot(&accounts, &positions, &orders)
+    }
+
+    async fn legacy_get(&self, path: &str) -> Result<Vec<u8>, ()> {
+        let endpoint = self.endpoint.as_ref().ok_or(())?;
+        let client = self.client.as_ref().ok_or(())?;
+        let response = client
+            .get(endpoint.base.join(path).map_err(|_| ())?)
+            .bearer_auth(&endpoint.token)
+            .send()
+            .await
+            .map_err(|_| ())?;
+        if !response.status().is_success() {
+            return Err(());
+        }
+        bounded_body(response).await
+    }
+
     /// Runs independently from health/agent sampling. The watch channel always
     /// carries a full replacement projection, including empty collections.
     pub async fn run(&self, updates: watch::Sender<TradingSnapshot>) {
         updates.send_replace(self.sample().await);
         let Some(endpoint) = &self.endpoint else {
+            // A disabled adapter is a valid long-running daemon configuration.
+            updates.closed().await;
             return;
         };
         loop {
             if updates.is_closed() {
                 return;
+            }
+            if self.state.lock().await.legacy_mode {
+                // Legacy snapshots are read-only. Avoid a retrying WS 404 loop,
+                // and discover a server upgrade on the next full REST sample.
+                tokio::select! {
+                    _ = updates.closed() => return,
+                    _ = tokio::time::sleep(RECONCILE_EVERY) => {},
+                }
+                updates.send_replace(self.sample().await);
+                continue;
             }
             let mut url = match endpoint.base.join("api/edge/ws") {
                 Ok(url) => url,
@@ -461,12 +519,9 @@ impl TradingController {
             state: TradingCommandState::Rejected,
             message: message.into(),
         };
-        let Ok(id) = Uuid::parse_str(command_id) else {
+        let Some(id) = valid_command_id(command_id) else {
             return rejected("Invalid command ID");
         };
-        if id.get_version_num() != 4 {
-            return rejected("Command ID must be a random UUID v4");
-        }
         let (Some(endpoint), Some(client)) = (&self.endpoint, &self.client) else {
             return rejected("Trading gateway is not configured");
         };
@@ -477,6 +532,14 @@ impl TradingController {
         if let Err(message) = validate_request(request, &snapshot) {
             return rejected(message);
         }
+        if self
+            .command_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return rejected("Another command is being reconciled");
+        }
+        let _in_flight = CommandInFlight(self.command_in_flight.clone());
         {
             let mut state = self.state.lock().await;
             if state.submitted.len() >= 4096 {
@@ -496,6 +559,7 @@ impl TradingController {
             let response = client
                 .post(url)
                 .bearer_auth(&endpoint.token)
+                .timeout(self.command_timeout)
                 .json(&envelope)
                 .send()
                 .await
@@ -564,7 +628,8 @@ impl TradingController {
             && snapshot.connection == TradingConnection::Connected
             && snapshot.broker_connected
             && state.observed_at.is_some()
-            && state.submitted.len() < 4096;
+            && state.submitted.len() < 4096
+            && !self.command_in_flight.load(Ordering::Acquire);
         snapshot
     }
 
@@ -692,6 +757,12 @@ fn valid_id(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
+fn valid_command_id(value: &str) -> Option<Uuid> {
+    Uuid::parse_str(value)
+        .ok()
+        .filter(|id| matches!(id.get_version_num(), 4 | 5))
+}
+
 fn valid_symbol(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 32
@@ -711,7 +782,7 @@ fn parse_snapshot(body: &[u8]) -> Result<TradingSnapshot, ()> {
         || snapshot.accounts.len() > 128
         || snapshot.positions.len() > 256
         || snapshot.orders.len() > 512
-        || snapshot.fills.len() > 256
+        || snapshot.fills.len() > 512
         || snapshot.quotes.len() > 128
         || snapshot
             .message
@@ -765,7 +836,7 @@ fn validate_request(
     {
         return Err("Selected account is unavailable for trading");
     }
-    let valid_quantity = |quantity: u32| quantity > 0 && quantity <= 10_000;
+    let valid_quantity = |quantity: u32| quantity > 0 && quantity <= 1_000;
     let valid_price =
         |price: Option<f64>| price.is_none_or(|price| price.is_finite() && price > 0.0);
     match request {
@@ -793,7 +864,9 @@ fn validate_request(
             ) && price.is_none()
                 || matches!(
                     order_type,
-                    TradingOrderType::StopMarket | TradingOrderType::StopLimit
+                    TradingOrderType::StopMarket
+                        | TradingOrderType::StopLimit
+                        | TradingOrderType::TrailingStop
                 ) && stop_price.is_none()
                 || *order_type == TradingOrderType::TrailingStop && trail_ticks.is_none()
                 || [trail_ticks, sl_ticks, tp_ticks]
@@ -882,6 +955,126 @@ fn now_ms() -> u64 {
         .min(u64::MAX as u128) as u64
 }
 
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LegacyId {
+    Number(u64),
+    Text(String),
+}
+impl LegacyId {
+    fn exact(self) -> String {
+        match self {
+            Self::Number(value) => value.to_string(),
+            Self::Text(value) => value,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct LegacyAccount {
+    id: LegacyId,
+    name: String,
+    balance: Option<f64>,
+    #[serde(rename = "canTrade", default)]
+    can_trade: bool,
+    #[serde(rename = "accountType", default)]
+    account_type: String,
+    realized_pnl: Option<f64>,
+    unrealized_pnl: Option<f64>,
+    loss_limit: Option<f64>,
+    min_account_balance: Option<f64>,
+    auto_liquidate_threshold: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct LegacyPosition {
+    #[serde(rename = "accountId")]
+    account_id: LegacyId,
+    #[serde(rename = "contractId")]
+    symbol: String,
+    #[serde(rename = "type")]
+    direction: u8,
+    size: u32,
+    #[serde(rename = "averagePrice")]
+    average_price: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct LegacyOrder {
+    id: LegacyId,
+    #[serde(rename = "accountId")]
+    account_id: LegacyId,
+    #[serde(rename = "contractId")]
+    symbol: String,
+    side: String,
+    #[serde(rename = "orderType")]
+    order_type: String,
+    size: u32,
+    #[serde(rename = "filledSize")]
+    filled_size: u32,
+    #[serde(rename = "limitPrice")]
+    limit_price: Option<f64>,
+    #[serde(rename = "stopPrice")]
+    stop_price: Option<f64>,
+    status: String,
+}
+
+fn legacy_snapshot(
+    accounts: &[u8],
+    positions: &[u8],
+    orders: &[u8],
+) -> Result<TradingSnapshot, ()> {
+    if [accounts.len(), positions.len(), orders.len()]
+        .iter()
+        .any(|size| *size > MAX_BODY)
+    {
+        return Err(());
+    }
+    let accounts: Vec<LegacyAccount> = serde_json::from_slice(accounts).map_err(|_| ())?;
+    let positions: Vec<LegacyPosition> = serde_json::from_slice(positions).map_err(|_| ())?;
+    let orders: Vec<LegacyOrder> = serde_json::from_slice(orders).map_err(|_| ())?;
+    if accounts.len() > 128 || positions.len() > 256 || orders.len() > 512 {
+        return Err(());
+    }
+    let snapshot = TradingSnapshot {
+        sampled_at_ms: now_ms(),
+        connection: TradingConnection::Connected,
+        // Legacy caches don't expose live Order Plant session liveness. A
+        // successful authenticated HTTP response proves only gateway reachability.
+        broker_connected: false,
+        execution_enabled: false,
+        supports_brackets: false,
+        supports_flatten: false,
+        message: Some("Server upgrade required for EDGE execution; legacy view is read-only and broker connection is unverified".into()),
+        accounts: accounts.into_iter().map(|account| TradingAccount {
+            id: account.id.exact(), label: account.name,
+            account_type: match account.account_type.as_str() { "Live"=>"LIVE", "Evaluation"=>"EVAL", "Practice"=>"SIM", _=>"UNKNOWN" }.into(),
+            can_trade: account.can_trade, balance: account.balance,
+            open_pnl: account.unrealized_pnl, closed_pnl: account.realized_pnl,
+            loss_limit: account.loss_limit, min_account_balance: account.min_account_balance,
+            auto_liquidate_threshold: account.auto_liquidate_threshold,
+        }).collect(),
+        positions: positions.into_iter().map(|position| {
+            let quantity = match position.direction { 1=>i64::from(position.size), 2=>-i64::from(position.size), _=>return Err(()) };
+            Ok(TradingPosition { account_id:position.account_id.exact(),symbol:position.symbol,quantity,average_price:position.average_price,open_pnl:None })
+        }).collect::<Result<Vec<_>, ()>>()?,
+        orders: orders.into_iter().map(|order| {
+            let side = match order.side.as_str() { "Buy"=>TradingSide::Buy, "Sell"=>TradingSide::Sell, _=>return Err(()) };
+            let order_type = match order.order_type.as_str() {
+                "Market"=>TradingOrderType::Market, "Limit"=>TradingOrderType::Limit,
+                "Stop" if order.limit_price.is_some()=>TradingOrderType::StopLimit,
+                "Stop"=>TradingOrderType::StopMarket, "TrailingStop"=>TradingOrderType::TrailingStop,
+                _=>return Err(()),
+            };
+            Ok(TradingOrder { id:order.id.exact(),account_id:order.account_id.exact(),symbol:order.symbol,side,quantity:order.size,filled_quantity:order.filled_size,order_type,price:order.limit_price,stop_price:order.stop_price,status:order.status.to_lowercase() })
+        }).collect::<Result<Vec<_>, ()>>()?,
+        ..Default::default()
+    };
+    // Reuse the new-protocol bounds and identifier validation. Empty quote/fill
+    // arrays are intentional: legacy routes cannot supply authoritative data.
+    parse_snapshot(&serde_json::to_vec(&snapshot).map_err(|_| ())?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -959,6 +1152,62 @@ mod tests {
         assert!(!config.enabled && !config.execution_enabled);
         let client = TradingController::new(config);
         assert!(client.endpoint.is_none());
+    }
+
+    #[test]
+    fn command_ids_accept_stable_v5_and_random_v4_only() {
+        let stable = Uuid::new_v5(&Uuid::NAMESPACE_OID, b"epoch:request-1");
+        assert_eq!(valid_command_id(&stable.to_string()), Some(stable));
+        assert!(valid_command_id(&Uuid::new_v4().to_string()).is_some());
+        assert!(valid_command_id(&Uuid::nil().to_string()).is_none());
+        assert!(valid_command_id("invalid").is_none());
+    }
+
+    fn legacy_bodies() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let id = u64::MAX;
+        (
+            serde_json::to_vec(&serde_json::json!([{"id":id,"name":"Demo","balance":50_000.0,"canTrade":true,"accountType":"Practice"}])).unwrap(),
+            serde_json::to_vec(&serde_json::json!([{"accountId":id,"contractId":"NQZ6","type":2,"size":2,"averagePrice":20_000.0}])).unwrap(),
+            serde_json::to_vec(&serde_json::json!([{"id":"order-1","accountId":id,"contractId":"NQZ6","side":"Buy","orderType":"Stop","size":2,"filledSize":0,"stopPrice":20_001.0,"status":"Open"}])).unwrap(),
+        )
+    }
+
+    #[test]
+    fn legacy_projection_preserves_full_u64_ids_and_is_always_read_only() {
+        let (accounts, positions, orders) = legacy_bodies();
+        let snapshot = legacy_snapshot(&accounts, &positions, &orders).unwrap();
+        assert_eq!(snapshot.accounts[0].id, u64::MAX.to_string());
+        assert_eq!(snapshot.positions[0].account_id, u64::MAX.to_string());
+        assert_eq!(snapshot.orders[0].account_id, u64::MAX.to_string());
+        assert_eq!(snapshot.positions[0].quantity, -2);
+        assert_eq!(snapshot.orders[0].order_type, TradingOrderType::StopMarket);
+        assert_eq!(snapshot.accounts[0].account_type, "SIM");
+        assert!(!snapshot.execution_enabled && !snapshot.broker_connected);
+        assert!(!snapshot.supports_brackets && !snapshot.supports_flatten);
+        assert!(snapshot.quotes.is_empty() && snapshot.fills.is_empty());
+        let mut accounts: serde_json::Value = serde_json::from_slice(&accounts).unwrap();
+        accounts[0]["id"] = serde_json::json!(u64::MAX as f64);
+        assert!(
+            legacy_snapshot(&serde_json::to_vec(&accounts).unwrap(), &positions, &orders).is_err()
+        );
+        accounts[0]["id"] = serde_json::json!(u64::MAX.to_string());
+        assert!(
+            legacy_snapshot(&serde_json::to_vec(&accounts).unwrap(), &positions, &orders).is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_stream_remains_alive_until_receiver_is_closed() {
+        let client = TradingController::new(TradingConfig::default());
+        let (updates, receiver) = watch::channel(TradingSnapshot::default());
+        let task = tokio::spawn(async move { client.run(updates).await });
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        drop(receiver);
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[test]
@@ -1144,6 +1393,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn edge_404_uses_only_read_only_legacy_routes_and_never_arms_execution() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (client, _credentials) =
+            controller(format!("http://{}", listener.local_addr().unwrap()));
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let request = String::from_utf8(read_http(&mut stream).await).unwrap();
+            assert!(request.starts_with("GET /api/edge/snapshot "));
+            respond(&mut stream, "404 Not Found", b"{}").await;
+            let (accounts, positions, orders) = legacy_bodies();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let request = String::from_utf8(read_http(&mut stream).await).unwrap();
+                let body = if request.starts_with("GET /api/rithmic/accounts ") {
+                    &accounts
+                } else if request.starts_with("GET /api/rithmic/positions ") {
+                    &positions
+                } else if request.starts_with("GET /api/rithmic/orders ") {
+                    &orders
+                } else {
+                    panic!("Unexpected legacy route or mutation")
+                };
+                respond(&mut stream, "200 OK", body).await;
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(150), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        let snapshot = client.sample().await;
+        assert_eq!(snapshot.connection, TradingConnection::Connected);
+        assert_eq!(snapshot.accounts.len(), 1);
+        assert!(!snapshot.execution_enabled);
+        assert!(client.state.lock().await.legacy_mode);
+        let result = client.perform(&place(), &Uuid::new_v4().to_string()).await;
+        assert_eq!(result.state, TradingCommandState::Rejected);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn authorization_error_never_falls_back_to_legacy_routes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (client, _credentials) =
+            controller(format!("http://{}", listener.local_addr().unwrap()));
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            read_http(&mut stream).await;
+            respond(&mut stream, "401 Unauthorized", b"{}").await;
+            assert!(
+                tokio::time::timeout(Duration::from_millis(150), listener.accept())
+                    .await
+                    .is_err()
+            );
+        });
+        assert_eq!(client.sample().await.connection, TradingConnection::Offline);
+        assert!(!client.state.lock().await.legacy_mode);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn mutation_timeout_has_one_submission_and_never_claims_success() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (mut client, _credentials) =
@@ -1156,6 +1466,7 @@ mod tests {
                 .build()
                 .unwrap(),
         );
+        client.command_timeout = Duration::from_millis(100);
         client.accept(fixture()).await.unwrap();
         arm(&client).await;
         let hits = Arc::new(AtomicUsize::new(0));
