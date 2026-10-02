@@ -9,6 +9,7 @@ Item {
     required property var activity
     required property var theme
     property bool previewMode: false
+    property real headerActionWidth: 0
     readonly property var trading: store.trading || ({})
     readonly property var accounts: trading.accounts || []
     readonly property var quotes: trading.quotes || []
@@ -350,7 +351,7 @@ Item {
                 font.pixelSize: 18
             }
             Text {
-                width: parent.width - 1280 - (root.unknownOutcome ? 292 : 0)
+                width: parent.width - 1280 - (root.unknownOutcome ? 292 : 0) - root.headerActionWidth
                 anchors.verticalCenter: parent.verticalCenter
                 text: {
                     root.clockTick;

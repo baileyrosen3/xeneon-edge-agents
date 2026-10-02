@@ -531,3 +531,20 @@ verification, installation, and the live handoff.
   touch and actual production-layer visual QA await that reconnection.
 - No LG preview, monitor changes, suspend/DPMS tests, or GitHub publication
   were performed during this update.
+
+## Monitor hardware panel — 2026-10-02
+
+- UI branch `local/monitor-settings-ui` adds a global Monitor overlay on both
+  dashboards, capability-driven raw hardware controls, integer touch keypad,
+  exact identity/display/touch diagnostics, and release-only writes. Pending
+  commands require a successful result plus newer matching hardware readback;
+  failures/timeouts require explicit refresh and never resend a mutation.
+- Current read-only exact-EDGE probes confirm brightness 95/100,
+  contrast 50/100, RGB 151/127/139 out of 255, sharpness 2/4, and User 1 preset.
+  The seven advertised preset values are 1, 2, 4, 5, 6, 8, 11. Separate DDC backlight
+  is unsupported and stays disabled. No setting writes have been performed.
+- UI peer review approved; combined Qt/Python and final installation checks
+  follow integration. Synthetic fixture screenshot is separate from native
+  hardware acceptance. A new reversible stage under `work/monitor-update/`
+  will preserve commissioning, credentials, read-only trading, and unrelated
+  personal configuration while adding only the monitor controller settings.

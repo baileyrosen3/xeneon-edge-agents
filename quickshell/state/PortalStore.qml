@@ -461,6 +461,28 @@ QtObject {
         return value.slice(0, limit).filter(function(row) { return row && typeof row === "object" }).map(normalize)
     }
 
+    function monitorInteger(value) {
+        return typeof value === "number" && isFinite(value) && Math.floor(value) === value && value >= 0 && value <= 65535 ? value : null
+    }
+
+    function normalizeMonitor(value) {
+        var s = value && typeof value === "object" ? value : {}
+        var allowed = ["brightness", "backlight", "contrast", "red_gain", "green_gain", "blue_gain", "sharpness", "color_preset"]
+        var seen = ({})
+        var controls = boundedRows(s.controls,16,function(c) {
+            var id = safeString(c.id,"",40)
+            var kind = c.kind === "enum" ? "enum" : c.kind === "continuous" ? "continuous" : "invalid"
+            var current = monitorInteger(c.current), maximum = monitorInteger(c.maximum)
+            var choices = boundedRows(c.choices,32,function(choice) { return {"value":monitorInteger(choice.value),"label":safeString(choice.label,"",64)} }).filter(function(choice) { return choice.value !== null })
+            var supported = c.supported === true && current !== null && (kind === "continuous" ? maximum !== null && maximum > 0 && current <= maximum : kind === "enum" && choices.some(function(choice) { return choice.value === current }))
+            return {"id":id,"label":safeString(c.label,id,64),"kind":kind,"supported":supported,"writable":supported && c.writable === true,"current":current,"maximum":maximum,"choices":choices,"reason":safeString(c.reason,supported ? "" : "Hardware value unavailable",240)}
+        }).filter(function(c) { if (allowed.indexOf(c.id) === -1 || seen[c.id]) return false; seen[c.id] = true; return true })
+        var d = s.display, t = s.touch
+        var display = d && monitorInteger(d.width) > 0 && monitorInteger(d.height) > 0 && optionalNumber(d.refresh_hz) > 0 && optionalNumber(d.scale) > 0 && monitorInteger(d.transform) !== null && d.transform <= 7 ? {"width":d.width,"height":d.height,"refresh_hz":d.refresh_hz,"scale":d.scale,"transform":d.transform} : null
+        var touch = t && typeof t.connected === "boolean" ? {"connected":t.connected,"device":safeString(t.device,"",100)} : null
+        return {"available":s.available === true,"identity_verified":s.identity_verified === true,"connector":safeString(s.connector,"",64),"serial":safeString(s.serial,"",64),"model":safeString(s.model,"",128),"edid_sha256":safeString(s.edid_sha256,"",64),"i2c_bus":monitorInteger(s.i2c_bus),"refreshed_at_ms":finiteNumber(s.refreshed_at_ms,0),"reason":safeString(s.reason,"",240),"controls":controls,"display":display,"touch":touch}
+    }
+
     function normalizeOmarchy(value) {
         var s = value && typeof value === "object" ? value : {}
         var a = s.audio || {}, m = s.media || {}, b = s.edge_brightness || {}
@@ -472,7 +494,8 @@ QtObject {
             "power_profile":safeString(s.power_profile,"",80), "power_profiles":Array.isArray(s.power_profiles) ? s.power_profiles.slice(0,16).map(function(t) { return safeString(t,"",80) }) : [],
             "storage":boundedRows(s.storage,16,function(d) { return {"mount":safeString(d.mount,"",180),"total_bytes":optionalNumber(d.total_bytes),"available_bytes":optionalNumber(d.available_bytes),"used_percent":optionalNumber(d.used_percent)} }),
             "processes":boundedRows(s.processes,16,function(p) { return {"pid":optionalNumber(p.pid),"name":safeString(p.name,"",100),"cpu_percent":optionalNumber(p.cpu_percent)} }),
-            "edge_brightness":{"available":b.available === true,"percent":optionalNumber(b.percent),"reason":safeString(b.reason,"",240)}
+            "edge_brightness":{"available":b.available === true,"percent":optionalNumber(b.percent),"reason":safeString(b.reason,"",240)},
+            "monitor":normalizeMonitor(s.monitor)
         }
     }
 

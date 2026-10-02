@@ -16,6 +16,7 @@ Item {
     property bool previewMicroOpen: false
     property string hostName: "LOCAL"
     property int dashboardIndex: preferences.dashboardIndex === 1 ? 1 : 0
+    property bool monitorSettingsOpen: false
     readonly property bool effectiveReducedMotion: reducedMotion || preferences.reduceMotion === true
     function selectDashboard(index) {
         dashboardIndex = index === 1 ? 1 : 0;
@@ -36,6 +37,7 @@ Item {
         objectName: "dashboardPages"
         width: root.width * 2
         height: root.height - switcher.height
+        enabled: !root.monitorSettingsOpen
         x: -root.dashboardIndex * root.width
         Behavior on x {
             NumberAnimation {
@@ -83,6 +85,8 @@ Item {
                 activity: root.activity
                 theme: root.theme
                 previewMode: root.previewMode
+                headerActionWidth: 194
+                onMonitorRequested: root.monitorSettingsOpen = true
             }
         }
         RiptideDashboard {
@@ -97,6 +101,23 @@ Item {
             activity: root.activity
             theme: root.theme
             previewMode: root.previewMode
+            headerActionWidth: 194
+        }
+    }
+    DashboardButton {
+        objectName: "globalMonitorButton"
+        anchors.right: parent.right
+        anchors.rightMargin: 18
+        y: 14
+        width: 180
+        height: 44
+        theme: root.theme
+        label: monitorSettings.pendingRequest !== "" ? "MONITOR · BUSY" : "MONITOR"
+        selected: root.monitorSettingsOpen
+        enabled: !root.monitorSettingsOpen
+        onClicked: {
+            root.activity.noteUserActivity()
+            root.monitorSettingsOpen = true
         }
     }
     DashboardSwitcher {
@@ -109,8 +130,23 @@ Item {
         theme: root.theme
         currentIndex: root.dashboardIndex
         reducedMotion: root.effectiveReducedMotion
+        enabled: !root.monitorSettingsOpen
         onSelected: function (index) {
             root.selectDashboard(index);
         }
+    }
+    MonitorSettings {
+        id: monitorSettings
+        objectName: "monitorSettings"
+        anchors.fill: parent
+        anchors.bottomMargin: switcher.height
+        store: root.store
+        bridge: root.bridge
+        activity: root.activity
+        theme: root.theme
+        previewMode: root.previewMode
+        reducedMotion: root.effectiveReducedMotion
+        open: root.monitorSettingsOpen
+        onCloseRequested: root.monitorSettingsOpen = false
     }
 }

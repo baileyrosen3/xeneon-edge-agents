@@ -18,6 +18,8 @@ Item {
     property string feedback: ""
     property bool drawerOpen: false
     property string drawerTab: "system"
+    property real headerActionWidth: 0
+    signal monitorRequested
     property var histories: ({})
     property int clockTick: 0
     readonly property var metrics: [
@@ -134,7 +136,7 @@ Item {
             width: parent.width
             height: 38
             Text {
-                width: parent.width - 220
+                width: parent.width - 220 - root.headerActionWidth
                 text: "OMARCHY // CONTROL"
                 textFormat: Text.PlainText
                 color: root.theme.textPrimary
@@ -551,7 +553,7 @@ Item {
                             }
                         }
                         Text {
-                            text: "EDGE HARDWARE BRIGHTNESS"
+                            text: "MONITOR HARDWARE"
                             textFormat: Text.PlainText
                             color: root.theme.accent
                             font.family: "monospace"
@@ -559,28 +561,18 @@ Item {
                         }
                         Text {
                             width: parent.width
-                            text: root.model.edge_brightness && root.model.edge_brightness.available === true ? root.model.edge_brightness.percent + "%" : String((root.model.edge_brightness || {}).reason || "Hardware brightness unavailable")
+                            text: String((root.model.monitor || {}).reason || "Picture controls and hardware capability discovery")
                             textFormat: Text.PlainText
                             color: root.theme.textMuted
                             font.pixelSize: 18
                             wrapMode: Text.WordWrap
                         }
-                        Row {
-                            spacing: 10
-                            Repeater {
-                                model: [10, 25, 50, 75, 100]
-                                DashboardButton {
-                                    required property int modelData
-                                    theme: root.theme
-                                    width: (drawerContent.width - 40) / 5
-                                    label: modelData + "%"
-                                    enabled: root.actionable && (root.model.edge_brightness || {}).available === true && root.pendingRequest === ""
-                                    onClicked: root.request({
-                                        operation: "edge_brightness",
-                                        percent: modelData
-                                    })
-                                }
-                            }
+                        DashboardButton {
+                            theme: root.theme
+                            width: drawerContent.width
+                            height: 52
+                            label: "OPEN MONITOR SETTINGS"
+                            onClicked: { root.drawerOpen = false; root.monitorRequested() }
                         }
                     }
                     Column {

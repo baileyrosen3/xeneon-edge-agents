@@ -467,6 +467,23 @@ TestCase {
         compare(bridge.tradingRequests, 0);
         compare(bridge.desktopRequests, 0);
     }
+
+    function test_monitorEntryIsGlobalAndModalPreservesSwitcher() {
+        var button = findChild(dashboards, "globalMonitorButton")
+        var switcher = findChild(dashboards, "dashboardSwitcher")
+        var pages = findChild(dashboards, "dashboardPages")
+        for (var i=0;i<2;++i) {
+            dashboards.selectDashboard(i)
+            mouseClick(button,button.width/2,button.height/2)
+            verify(dashboards.monitorSettingsOpen)
+            verify(switcher.visible)
+            verify(!switcher.enabled)
+            verify(!pages.enabled)
+            dashboards.monitorSettingsOpen=false
+            verify(switcher.enabled)
+        }
+        compare(bridge.desktopRequests,0)
+    }
     function test_orderSubmissionIsExactAndNeverRepeatedWhilePending() {
         dashboards.selectDashboard(1);
         var trading = findChild(dashboards, "riptideDashboard");

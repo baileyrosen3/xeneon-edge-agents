@@ -17,13 +17,51 @@ The control dashboard combines the existing PC health readings with desktop
 controls: audio volume/mute, microphone mute, output selection, media playback,
 Do Not Disturb, keep-awake, nightlight, capture, lock, themes, and power profiles.
 Storage usage and a bounded process list provide PC context. Optional services
-and readings have unavailable states. The current EDGE brightness capability is
-disabled when exact hardware identity and restoration have not been verified.
+and readings have unavailable states.
 
 Omarchy controls use the existing host command interfaces through an allowlist
 in `crates/xeneon-agent-core/src/omarchy.rs`. A request such as
 `{"operation":"volume","percent":55}` has fixed fields and bounded values.
 Unknown operations and extra fields are rejected before dispatch.
+
+## Monitor hardware settings
+
+The **Monitor** button in either dashboard opens the same hardware settings
+overlay. The bottom dashboard slider remains in place; the underlying dashboard
+and slider cannot receive touches while the overlay is open. Device identity,
+DDC bus, EDID digest, and available display/touch status are shown alongside the
+picture controls. Display resolution, rotation, and touch mapping are read-only.
+
+Controls are discovered against the commissioned EDGE identity and confirmed
+with successful DDC reads. Continuous controls use the monitor's actual integer
+range; they do not assume percentages. Brightness, contrast, RGB gain, sharpness,
+and advertised color presets can appear as writable capabilities. Unsupported
+controls remain visible with their reason. The EDGE tested here exposes no
+independent DDC backlight control, so that row stays disabled. Dashboard dimming
+is a software overlay and is not a hardware backlight setting.
+
+Dragging a hardware slider edits its local draft and sends one request on
+release. Tapping its reported value opens an integer touch keypad with an Apply
+button. Presets use only advertised values and names; RGB availability follows
+the backend's writable flags for the active preset. A write remains pending
+until a successful result and a newer matching hardware readback arrive. An
+error or timeout requires an explicit hardware refresh before another write;
+the UI never resends the previous request.
+
+The typed operations are `monitor_refresh` and
+`{"operation":"monitor_set","control":"contrast","value":50}`. The daemon
+owns identity verification, capability discovery, range checks, serialization,
+bounded DDC calls, and readback. The UI cannot select an arbitrary bus or VCP
+code. Factory reset, input switching, power control, display-mode changes, and
+touch calibration are not exposed by this panel.
+
+The `[monitor]` configuration separates observation (`enabled`) from writes
+(`writes_enabled`). Writes default to false. `refresh_ms` sets the bounded
+background observation interval, and optional `commissioning_file` selects the
+exact identity record. This controller replaces the legacy commissioning
+`[ddc].brightness_enabled` gate; enabling the new controller does not change that
+record or touchscreen/display configuration. Hardware values and capability
+availability are runtime data, not theme constants.
 
 ## Agents
 
@@ -121,11 +159,15 @@ The source customization points are:
 | `quickshell/components/DashboardSwitcher.qml` | Fixed bottom drag/tap slider |
 | `quickshell/components/PortalView.qml` | Existing agent interface, actions, and pagination |
 | `quickshell/components/OmarchyControls.qml` | Desktop dashboard content |
+| `quickshell/components/MonitorSettings.qml` | Global hardware overlay, pending/readback state, and touch keypad |
+| `quickshell/components/MonitorControl.qml` | Capability-driven hardware value and slider card |
+| `quickshell/components/MonitorSlider.qml` | Raw-unit touch slider that commits on release |
 | `quickshell/components/RiptideDashboard.qml` | Trading layout, ticket, and review flow |
 | `quickshell/state/PortalStore.qml` | Bounded UI normalization and full replacement state |
 | `quickshell/state/PortalBridge.qml` | Typed transport and preview restrictions |
 | `quickshell/state/CommandBuilder.qml` | Command envelope construction |
 | `crates/xeneon-agent-core/src/omarchy.rs` | Host collectors and allowed desktop operations |
+| `crates/xeneon-agent-core/src/monitor.rs` | Exact device discovery, DDC controls, and verified readback |
 | `crates/xeneon-agent-core/src/trading.rs` | Gateway transport, normalization, and execution gates |
 
 Preview mode blocks real desktop and trading controls. It is suitable for
@@ -149,6 +191,12 @@ execution states, and preview actions producing no real control dispatch.
 The Qt test runner uses an inert I/O double for the actual bridge component;
 no daemon/process is started by that test. Runtime socket tests separately
 exercise the real Rust transport.
+
+`quickshell/tests/tst_monitor_settings.qml` covers dynamic hardware ranges,
+unsupported controls, release-only writes, snapshots arriving during a drag,
+readback/result ordering, explicit recovery after errors, integer keypad bounds,
+and preview/stale/unverified actions producing no dispatch. Its exported image
+is a synthetic fixture, not a live hardware acceptance test.
 
 Run `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`,
 and `tests/run-qml-tests`. Installer/Lua checks and physical hardware checks
