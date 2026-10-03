@@ -705,3 +705,79 @@ verification, installation, and the live handoff.
   failures on the EDGE output (`enabling link 2 failed`) were 3-6 per minute
   while the stack was running before the pause and 0 in the five minutes after
   this activation; treat that as observation, not a hardware verdict.
+
+## Nine-preset slide-out sidebar · 2026-10-02
+
+- Integration branch: `local/omarchy`. UI streams used isolated worktrees:
+  `work/nine-preset-sidebar` at `/tmp/xeneon-nine-preset-sidebar` and
+  `work/desktop-preset-pages` at `/tmp/xeneon-desktop-preset-pages`; both were
+  removed after their changes were integrated.
+- Scope: replace the two-position bottom switcher with a left-edge drawer;
+  preserve Agents and Riptide as presets 1–2, then expose Desktop Controls,
+  System Details, Audio / Display, Theme / Power, AI Usage, Agent Radar, and
+  Palette Settings as presets 3–9.
+- The existing Monitor settings entry moves into the drawer's bottom-right
+  footer and continues to open the shared typed hardware overlay. No daemon,
+  execution, hardware identity, installed configuration, or service changes.
+- The obsolete bottom switcher is removed. The nine presets retain the existing
+  mounted agent/trading surfaces, bounded persisted selection, desktop pending
+  results, and reduced-motion behavior.
+- Independent action-boundary review found an old desktop detail drawer could
+  re-cover a newly selected overview. A regression failed before the fix and
+  passes after clearing only that presentation state on a valid selection;
+  pending actions are neither cancelled nor resent. Re-review approved the fix
+  with no remaining findings. Interaction re-review also approved after its
+  ten-card readability finding was resolved.
+- Focused gates passed: 19 dashboard Qt checks and three desktop-metric checks.
+  The final isolated runner (`QT_QPA_PLATFORM=offscreen`) passed 28 Python
+  contract/fixture tests and 163 Qt checks.
+  `qmllint` completed with existing unqualified-access warnings in unchanged
+  sections/components; the new sidebar and routing component have no warnings.
+- A post-review run inherited `QT_QPA_PLATFORM=wayland;xcb` and emitted
+  "window not active after requestActivate" warnings with one missed pagination
+  click. The explicit offscreen run passed; real Wayland Quickshell tours are
+  the separate rendering evidence, not a claim of physical touch validation.
+- Required Rust gates passed: formatting, 165 workspace tests, and Clippy with
+  warnings denied. ShellCheck passed. The isolated integration runner passed
+  13 startup and 31 installer/lifecycle scenarios, including generated Lua
+  syntax and lifecycle checks.
+- An actual Quickshell source tour rendered all nine pages, restarted with the
+  remembered ninth preset, opened/closed the shared Monitor overlay, and
+  exercised desktop-detail navigation without the stale modal. The final
+  viewport was 1280×360 logical / 2560×720 captured pixels. Screenshots of every
+  destination and the Monitor/footer were visually inspected.
+- Native startup exposed transient negative page width; bounded rail/agent
+  geometry fixed it, and the final runtime emitted no negative-cache warning.
+- A twelve-agent Quickshell fixture reproduced the dense-card regression:
+  328.8 design-pixel cards with the initial rail allocation. Sharing the
+  704-pixel desktop-panel width restores 332-pixel cards; the audio row's
+  measured right edge remains at 660, within the panel. The same runtime then
+  rendered all nine presets and Monitor successfully, and dense-layout/sidebar
+  captures were visually inspected. Incidental geometry/default assertions
+  were not re-pinned; permanent navigation and pagination checks still pass.
+- Ephemeral screenshots remain outside the clone at
+  `/tmp/xeneon-sidebar-runtime/*.png`. The throwaway preview/layout QML,
+  synthetic fixture, preferences, and import links were removed after smoke
+  proof.
+- Runtime/fixture interaction is separate from physical touchscreen validation.
+
+## Product-design and deployment audit · 2026-10-03
+
+- Integration remains on `local/omarchy`. Read-only product-design and safety
+  audits cover all nine pages, shared controls, action/modal boundaries, privacy,
+  and the installed-file ownership/deployment path.
+- Exact live EDID, serial/model, connector, and USB touchscreen identity passed
+  `scripts/check.sh`. The EDGE is 2560×720 physical / 1024×288 logical at scale
+  2.5; design dimensions are scaled by 0.4, not literal logical touch sizes.
+- Initial ownership preflight found four QML deltas and the unchanged owned
+  obsolete `DashboardSwitcher.qml`. Production config, preferences, trading
+  execution (`false`), hardware settings, Hyprland, and binaries must remain
+  unchanged. Normal production re-commissioning is not a preserving UI update;
+  the independently assessed deployment is a backed-up, lifecycle-gated,
+  managed-QML-only transaction with portal-only restart and rollback.
+- Material findings to resolve before deployment: reversible motion preference,
+  Monitor keyboard/modal exit, compact agent identification, sidebar touch/text
+  density, pending trading acknowledgement ordering, and lost desktop results.
+- UI implementation streams use isolated worktrees `work/ui-keyboard-audit`
+  (`/tmp/xeneon-keyboard-audit`) and `work/ui-density-audit`
+  (`/tmp/xeneon-density-audit`). No live deployment has occurred at this gate.

@@ -1,11 +1,72 @@
-# Two touch dashboards
+# Nine touch presets
 
-The portal keeps the existing visual theme and agent interface, with two
-full-size destinations: **Omarchy + Agents** and **Riptide**. Tap either label
-or drag the fixed two-position slider at the bottom to switch. Both screens
-remain mounted so ticket drafts survive switching. Agent-card pagination
-continues within the combined dashboard, with ten cards per page and explicit
-Previous/Next controls. Controls and scrolling lists own their touch gestures.
+The portal keeps the existing visual theme and agent interface, with a
+**left-edge slide-out sidebar**. Tap the edge grip or drag it to the right to
+open; tap a preset to switch pages and close the sidebar. Drag the grip left,
+tap the backdrop, or use Escape in a keyboard-focusable preview to dismiss it.
+The selected preset persists across portal restarts.
+
+| Preset | Page |
+|---|---|
+| 1 | Agent Dashboard — existing agents and Omarchy controls |
+| 2 | Trading Dashboard — existing Riptide console |
+| 3 | Desktop Controls — PC health and quick actions |
+| 4 | System Details — storage, processes, and network |
+| 5 | Audio / Display — audio outputs and monitor access |
+| 6 | Theme / Power — Omarchy themes and power profiles |
+| 7 | AI Usage — provider capacity and fleet status |
+| 8 | Agent Radar — live agent constellation |
+| 9 | Palette Settings — agent-state color mappings |
+
+Agent and trading screens remain mounted, so agent pagination and ticket
+drafts survive switching. The desktop presets share one control instance and
+its pending results. The desktop shortcuts on the agent dashboard's control
+panel select presets 4–6 directly instead of opening a second local drawer, so
+one destination has one navigation path. Unavailable projections stay
+explicit.
+
+Agent-card pagination continues within the combined dashboard, with ten cards
+per page and explicit Previous/Next controls. Each card gives its display name
+the full card width on up to two lines at the existing title size, so numeric
+or otherwise distinguishing suffixes stay readable. Only the edge grip owns the
+sidebar drag; page controls and scrolling lists keep their own gestures. Pages
+cannot receive input while the sidebar is open, dragging, or settling. Reduced
+motion snaps the drawer to its destination.
+
+Preset rows, the Monitor entry, and agent pagination controls are sized for
+shallow touch surfaces and scroll when the list is taller than the drawer; a
+scroll indicator appears whenever a preset is out of view. Storage rows are
+informational, not buttons.
+
+## Keyboard and modal behavior
+
+The installed portal window holds no keyboard focus, so this section describes
+keyboard-operable behavior in focusable previews and assistive-technology
+activation. Shared buttons accept Enter and Space once per press, show a focus
+border, and expose their accessible name, state, and press action.
+
+The sidebar retains focus while open and restores it to the edge grip on close.
+The Monitor overlay, palette pane, Riptide selector, confirmation, and amendment
+dialogs each take focus on open, contain Tab and Backtab, dismiss on Escape,
+and restore the invoker's focus on close. Continuous monitor sliders accept
+arrow, Home, and End keys against the discovered integer range. Palette role
+cells are radio buttons with roving arrow-key selection. Agent motion
+reduction stays a reversible user preference; only an externally forced value
+disables the control.
+
+## Pending actions
+
+A desktop action that is dispatched but never answered — transport loss, a
+daemon restart, or the response deadline — is not silently unlocked. The
+shared desktop control reports an unknown outcome, blocks further desktop
+actions, and requires the user to review current desktop state and press
+**REVIEWED · RESUME** once a newer snapshot arrives. The action is never
+replayed automatically.
+
+A trading `pending` acknowledgement is not fulfillment. Local execution stays
+locked across page and modal transitions until a strictly newer broker
+observation arrives; the request is never resent. A lost or timed-out outcome
+keeps its existing explicit review-and-resume path.
 
 The Rust daemon owns data collection and actions. Quickshell presents bounded
 snapshots and sends typed requests; it does not execute arbitrary shell commands
@@ -26,11 +87,13 @@ Unknown operations and extra fields are rejected before dispatch.
 
 ## Monitor hardware settings
 
-The **Monitor** button in either dashboard opens the same hardware settings
-overlay. The bottom dashboard slider remains in place; the underlying dashboard
-and slider cannot receive touches while the overlay is open. Device identity,
-DDC bus, EDID digest, and available display/touch status are shown alongside the
-picture controls. Display resolution, rotation, and touch mapping are read-only.
+The **Monitor** button sits in the sidebar's **bottom-right corner**, available
+from all nine presets, and opens the same hardware settings overlay. Opening
+Monitor closes the sidebar; the underlying pages and sidebar cannot receive
+input while the overlay is visible. Closing settings restores the selected
+preset. Device identity, DDC bus, EDID digest, and available display/touch status
+are shown alongside the picture controls. Display resolution, rotation, and
+touch mapping are read-only.
 
 Controls are discovered against the commissioned EDGE identity and confirmed
 with successful DDC reads. Continuous controls use the monitor's actual integer
@@ -144,7 +207,9 @@ stream before enabling execution. Old/disconnected data disables actions.
 
 Commands have no automatic transport retry. A confirmed broker observation can
 produce success. `pending` is acknowledged but remains visibly unconfirmed
-until a fresh broker update; execution is disarmed while that update is awaited.
+until a strictly newer broker observation arrives; the local execution
+interlock stays engaged across page and modal transitions while that update is
+awaited, and the acknowledged request is never resent.
 An `unknown` outcome keeps the ticket locked until the user explicitly reviews
 current orders/positions and uses Review & resume. That control never resends
 the prior command. The server
@@ -179,8 +244,8 @@ The source customization points are:
 
 | Location | Responsibility |
 |---|---|
-| `quickshell/components/DashboardView.qml` | Combined dashboard composition and two-screen routing |
-| `quickshell/components/DashboardSwitcher.qml` | Fixed bottom drag/tap slider |
+| `quickshell/components/DashboardView.qml` | Nine-preset composition, routing, persistence, and modal boundaries |
+| `quickshell/components/DashboardSidebar.qml` | Edge drag/tap drawer, preset selection, and bottom-right Monitor entry |
 | `quickshell/components/PortalView.qml` | Existing agent interface, actions, and pagination |
 | `quickshell/components/OmarchyControls.qml` | Desktop dashboard content |
 | `quickshell/components/MonitorSettings.qml` | Global hardware overlay, pending/readback state, and touch keypad |
@@ -208,6 +273,14 @@ trading disabled, exact account IDs, independent capabilities, reconciliation,
 and local HTTP/WebSocket mocks. Decimal tick metadata promoted from `f32` must
 not reject valid decimal prices; the gateway performs authoritative price-grid
 validation.
+
+`quickshell/tests/tst_dashboards.qml` covers all nine pointer-selected presets
+with scrolling, repeated edge drags, backdrop and Escape dismissal, bounded
+selection, draft retention, desktop shortcuts that select the matching
+presets without replaying a pending action, closing-animation action blocking,
+reversible motion preference, keyboard Monitor entry with focus restoration,
+recoverable pending trading acknowledgement, explicit lost-result review, and
+global Monitor entry with modal navigation blocking.
 
 `quickshell/tests/tst_dashboard_store_safety.qml` covers equal-sequence newer
 snapshots refreshing both dashboards, exact opaque handles, disconnected/stale

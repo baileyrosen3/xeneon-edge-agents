@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Window
 import "../state/ThemePalette.js" as ThemePalette
 
 Rectangle {
@@ -8,6 +9,7 @@ Rectangle {
     property var preferences
     property var sourceTheme: ThemePalette.fallback
     property var theme: ThemePalette.fallback
+    property Item returnFocusItem: null
 
     signal closeRequested()
     signal interactionOccurred()
@@ -166,6 +168,52 @@ Rectangle {
         }
         return "CURRENT OMARCHY THEME"
     }
+    function focusTargets(item, targets) {
+        if (!item.visible || !item.enabled) return
+        if (item.activeFocusOnTab) targets.push(item)
+        for (var i = 0; i < item.children.length; ++i)
+            focusTargets(item.children[i], targets)
+    }
+    function moveFocus(backwards) {
+        var targets = []
+        focusTargets(root, targets)
+        if (!targets.length) return
+        var current = -1
+        for (var i = 0; i < targets.length; ++i)
+            if (targets[i].activeFocus) { current = i; break }
+        var next = current < 0 ? (backwards ? targets.length - 1 : 0)
+            : (current + (backwards ? -1 : 1) + targets.length) % targets.length
+        targets[next].forceActiveFocus(backwards ? Qt.BacktabFocusReason : Qt.TabFocusReason)
+    }
+    function acquireFocus() {
+        if (!open || !visible || !enabled) return
+        if (root.Window.window)
+            returnFocusItem = root.Window.window.activeFocusItem
+        closeButton.forceActiveFocus(Qt.OtherFocusReason)
+    }
+    onOpenChanged: {
+        if (open) Qt.callLater(acquireFocus)
+        else {
+            var previous = returnFocusItem
+            returnFocusItem = null
+            Qt.callLater(function() {
+                if (!root.open && previous && previous.visible && previous.enabled)
+                    previous.forceActiveFocus(Qt.OtherFocusReason)
+            })
+        }
+    }
+    Component.onCompleted: { if (open) Qt.callLater(acquireFocus) }
+    Keys.priority: Keys.BeforeItem
+    Keys.onPressed: function(event) {
+        if (!root.open) return
+        if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+            root.moveFocus(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) !== 0)
+            event.accepted = true
+        } else if (event.key === Qt.Key_Escape) {
+            event.accepted = true
+            if (!event.isAutoRepeat) root.closeRequested()
+        }
+    }
 
     objectName: "paletteSettingsPane"
     width: 960
@@ -237,7 +285,7 @@ Rectangle {
                 }
             }
 
-            Rectangle {
+            DashboardButton {
                 id: closeButton
                 objectName: "paletteCloseButton"
                 anchors {
@@ -246,41 +294,12 @@ Rectangle {
                 }
                 width: 48
                 height: 44
-                radius: 12
-                color: closeTap.pressed
-                    ? root.theme.surfacePressed
-                    : root.theme.surfaceRaised
-                border.width: 1
-                border.color: root.theme.border
-
-                function activate() {
-                    if (!enabled)
-                        return false
-                    root.closeRequested()
-                    return true
-                }
-
-                Accessible.role: Accessible.Button
+                theme: root.theme
+                label: "CLOSE"
+                labelPixelSize: 9
+                Keys.forwardTo: [root]
                 Accessible.name: "Close palette mapping"
-                Accessible.onPressAction: activate()
-
-                Text {
-                    anchors.centerIn: parent
-                    text: "CLOSE"
-                    textFormat: Text.PlainText
-                    color: root.theme.textPrimary
-                    font {
-                        family: "monospace"
-                        pixelSize: 9
-                        weight: Font.Bold
-                    }
-                }
-
-                TapHandler {
-                    id: closeTap
-                    gesturePolicy: TapHandler.ReleaseWithinBounds
-                    onTapped: closeButton.activate()
-                }
+                onClicked: root.closeRequested()
             }
         }
 
@@ -355,12 +374,19 @@ Rectangle {
             }
         }
 
-        Item {
+        Flickable {
+            id: mappingList
             width: parent.width
-            height: root.mappingTargets.length * 44
+            height: Math.max(44, parent.height - 176)
+            contentWidth: width
+            contentHeight: mappingColumn.height
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.VerticalFlick
+            clip: true
 
             Column {
-                anchors.fill: parent
+                id: mappingColumn
+                width: mappingList.width
 
                 Repeater {
                     model: root.mappingTargets
@@ -370,6 +396,8 @@ Rectangle {
                         required property var modelData
                         width: parent.width
                         height: 44
+                        Accessible.role: Accessible.Grouping
+                        Accessible.name: modelData.label + " color"
 
                         Text {
                             anchors {
@@ -398,11 +426,13 @@ Rectangle {
                             height: parent.height
 
                             Repeater {
+                                id: roleButtons
                                 model: root.paletteRoles
 
                                 Rectangle {
                                     id: roleButton
                                     required property string modelData
+                                    required property int index
                                     readonly property bool selected:
                                         root.selectionFor(
                                             mappingRow.modelData.id,
@@ -423,14 +453,41 @@ Rectangle {
                                                 0.16
                                             )
                                             : "transparent"
-                                    border.width: selected ? 2 : 0
-                                    border.color: root.theme.textPrimary
+                                    activeFocusOnTab: enabled && visible && selected
+                                    border.width: activeFocus ? 3 : selected ? 2 : 0
+                                    border.color: activeFocus ? root.theme.accent : root.theme.textPrimary
+                                    Keys.forwardTo: [root]
+                                    Keys.onPressed: function(event) {
+                                        var next = index
+                                        if (event.key === Qt.Key_Left || event.key === Qt.Key_Up)
+                                            next = (index + roleButtons.count - 1) % roleButtons.count
+                                        else if (event.key === Qt.Key_Right || event.key === Qt.Key_Down)
+                                            next = (index + 1) % roleButtons.count
+                                        else if (event.key === Qt.Key_Home)
+                                            next = 0
+                                        else if (event.key === Qt.Key_End)
+                                            next = roleButtons.count - 1
+                                        else if (event.key === Qt.Key_Space || event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                                            event.accepted = true
+                                            if (!event.isAutoRepeat) activate()
+                                            return
+                                        } else return
+                                        event.accepted = true
+                                        var button = roleButtons.itemAt(next)
+                                        if (button) button.activate()
+                                    }
+                                    onActiveFocusChanged: {
+                                        if (!activeFocus) return
+                                        if (mappingRow.y < mappingList.contentY)
+                                            mappingList.contentY = mappingRow.y
+                                        else if (mappingRow.y + mappingRow.height > mappingList.contentY + mappingList.height)
+                                            mappingList.contentY = mappingRow.y + mappingRow.height - mappingList.height
+                                    }
 
                                     function activate() {
-                                        return root.setMapping(
-                                            mappingRow.modelData.id,
-                                            modelData
-                                        )
+                                        if (!enabled) return false
+                                        forceActiveFocus(Qt.OtherFocusReason)
+                                        return root.setMapping(mappingRow.modelData.id, modelData)
                                     }
 
                                     Accessible.role: Accessible.RadioButton
@@ -438,6 +495,9 @@ Rectangle {
                                         + " uses " + modelData
                                     Accessible.checkable: true
                                     Accessible.checked: selected
+                                    Accessible.focusable: enabled && visible
+                                    Accessible.focused: activeFocus
+                                    Accessible.onToggleAction: activate()
                                     Accessible.onPressAction: activate()
 
                                     Rectangle {
@@ -504,7 +564,7 @@ Rectangle {
                 }
             }
 
-            Rectangle {
+            DashboardButton {
                 id: resetButton
                 objectName: "paletteResetButton"
                 anchors {
@@ -513,47 +573,16 @@ Rectangle {
                 }
                 width: 150
                 height: 44
-                radius: 12
-                color: resetTap.pressed
-                    ? root.theme.surfacePressed
-                    : root.theme.surfaceRaised
-                border.width: 1
-                border.color: root.customized
-                    ? root.theme.accent
-                    : root.theme.border
+                theme: root.theme
                 enabled: root.customized
-
-                function activate() {
-                    if (!enabled)
-                        return false
-                    return root.resetMappings()
-                }
-
-                Accessible.role: Accessible.Button
-                Accessible.ignored: !enabled
+                label: "RESET DEFAULTS"
+                labelPixelSize: 9
+                Keys.forwardTo: [root]
                 Accessible.name: "Reset palette mappings"
                 Accessible.description: "Restore the reviewed default roles"
-                Accessible.onPressAction: activate()
-
-                Text {
-                    anchors.centerIn: parent
-                    text: "RESET DEFAULTS"
-                    textFormat: Text.PlainText
-                    color: resetButton.enabled
-                        ? root.theme.textPrimary
-                        : root.theme.textMuted
-                    font {
-                        family: "monospace"
-                        pixelSize: 9
-                        weight: Font.Bold
-                    }
-                }
-
-                TapHandler {
-                    id: resetTap
-                    enabled: resetButton.enabled
-                    gesturePolicy: TapHandler.ReleaseWithinBounds
-                    onTapped: resetButton.activate()
+                onClicked: {
+                    root.resetMappings()
+                    closeButton.forceActiveFocus(Qt.OtherFocusReason)
                 }
             }
         }

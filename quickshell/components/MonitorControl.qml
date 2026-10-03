@@ -9,11 +9,12 @@ DashboardCard {
     property bool pending: false
     property bool queued: false
     property bool numberEnabled: writable
+    property Item keyboardScope: null
     readonly property bool targetVisible: hasValue && (pending || queued || draft !== Number(control.current))
     readonly property bool hasValue: control.supported === true && control.current !== null && control.current !== undefined && control.maximum !== null && control.maximum !== undefined && Number(control.maximum) > 0
     signal draftEdited(int value)
     signal valueReleased(int value)
-    signal numberRequested
+    signal numberRequested(Item invoker)
     Text {
         x: 16
         y: 19
@@ -27,6 +28,7 @@ DashboardCard {
         elide: Text.ElideRight
     }
     DashboardButton {
+        id: numericButton
         objectName: "monitorNumeric_" + String(root.control.id)
         anchors.right: parent.right
         anchors.rightMargin: 12
@@ -34,12 +36,14 @@ DashboardCard {
         width: 136
         height: 44
         theme: root.theme
+        Keys.forwardTo: root.keyboardScope ? [root.keyboardScope] : []
+        Accessible.name: "Enter " + String(root.control.label || root.control.id)
         label: root.targetVisible ? "SET " + root.draft : root.hasValue ? root.control.current + " / " + root.control.maximum : "—"
         detail: root.targetVisible ? "READ " + root.control.current + "/" + root.control.maximum : root.hasValue ? "READ VALUE" : "UNAVAILABLE"
         enabled: root.numberEnabled
         opacity: root.hasValue ? 1 : 0.42
         selected: root.targetVisible
-        onClicked: root.numberRequested()
+        onClicked: root.numberRequested(numericButton)
     }
     Text {
         x: 16
@@ -58,6 +62,8 @@ DashboardCard {
         width: parent.width - 32
         height: 48
         theme: root.theme
+        accessibleName: String(root.control.label || root.control.id)
+        Keys.forwardTo: root.keyboardScope ? [root.keyboardScope] : []
         value: root.draft
         maximum: root.hasValue ? Number(root.control.maximum) : 1
         visible: root.hasValue

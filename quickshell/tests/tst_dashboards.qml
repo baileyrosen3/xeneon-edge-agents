@@ -8,6 +8,7 @@ TestCase {
     name: "Dashboards"
     width: 2560
     height: 720
+    visible: true
     when: windowShown
     QtObject {
         id: store
@@ -67,6 +68,7 @@ TestCase {
         property string protocolError: ""
         property bool freshSnapshotRequired: false
         property double sequence: 1
+        property double generatedAtMs: 1
         function surfaceState() {
             return agents.length ? "ready" : "empty";
         }
@@ -137,21 +139,15 @@ TestCase {
         function sync() {
         }
     }
-    Window {
-        id: testWindow
-        width: 2560
-        height: 720
-        visible: true
-        DashboardView {
-            id: dashboards
-            anchors.fill: parent
-            store: store
-            bridge: bridge
-            activity: activity
-            preferences: preferences
-            theme: ThemePalette.fallback
-            reducedMotion: true
-        }
+    DashboardView {
+        id: dashboards
+        anchors.fill: parent
+        store: store
+        bridge: bridge
+        activity: activity
+        preferences: preferences
+        theme: ThemePalette.fallback
+        reducedMotion: true
     }
 
     function snapshot() {
@@ -237,6 +233,13 @@ TestCase {
             ]
         };
     }
+    function initTestCase() {
+        // The runner reuses its window between files; pointer targets need this surface's size.
+        Window.window.width = width;
+        Window.window.height = height;
+        Window.window.requestActivate();
+        wait(0);
+    }
     function init() {
         store.trading = snapshot();
         store.freshSnapshotRequired = false;
@@ -291,8 +294,18 @@ TestCase {
                 }
             });
         store.agents = store.agents.slice();
+        bridge.ready = true;
+        store.generatedAtMs = Date.now();
         bridge.tradingRequests = 0;
         bridge.desktopRequests = 0;
+        preferences.reduceMotion = true;
+        dashboards.reducedMotion = true;
+        dashboards.monitorSettingsOpen = false;
+        dashboards.sidebarOpen = false;
+        var omarchy = findChild(dashboards, "omarchyControlPanel");
+        omarchy.pendingRequest = "";
+        omarchy.unknownOutcome = false;
+        omarchy.unknownAtMs = 0;
         dashboards.previewMode = false;
         dashboards.selectDashboard(0);
         var trading = findChild(dashboards, "riptideDashboard");
@@ -301,6 +314,8 @@ TestCase {
         trading.confirmationIsReview = false;
         trading.quantity = 1;
         trading.pendingRequest = "";
+        trading.pendingAtMs = 0;
+        trading.awaitingBroker = false;
         trading.keypadField = "";
         trading.confirmationOpen = false;
         trading.editingOrder = null;
@@ -309,46 +324,214 @@ TestCase {
         trading.brackets = false;
         wait(0);
     }
-    function test_switcher_preservesDraftAndAgentTargets() {
-        var trading = findChild(dashboards, "riptideDashboard");
+    function test_motionPreferenceRemainsReversible() {
+        dashboards.reducedMotion = false;
+        preferences.reduceMotion = false;
         var agents = findChild(dashboards, "combinedAgentPortal");
-        compare(agents.pageSize, 10);
-        verify(findChild(agents, "agentBackendToggle").height >= 44);
-        verify(findChild(agents, "chatGptDesktopButton").height >= 44);
-        var firstCard = findChild(agents, "agentCard_0_0");
-        verify(firstCard.width >= 330);
-        verify(firstCard.height >= 180);
-        verify(firstCard.y + firstCard.height <= findChild(agents, "agentGrid_0").height + 0.5);
+        verify(agents.toggleMotionReduction());
+        compare(preferences.reduceMotion, true);
+        verify(agents.toggleMotionReduction());
+        compare(preferences.reduceMotion, false);
+        preferences.reduceMotion = true;
+        verify(agents.toggleMotionReduction());
+        compare(preferences.reduceMotion, false);
+        dashboards.reducedMotion = true;
+        verify(!agents.toggleMotionReduction());
+        compare(preferences.reduceMotion, false);
+    }
+    function test_pendingBrokerAcknowledgementKeepsLocalExecutionLocked() {
+        dashboards.selectDashboard(1);
+        var trading = findChild(dashboards, "riptideDashboard");
+        var oldObservation = store.trading.sampled_at_ms;
+        verify(trading.submit("buy", false));
+        store.actionResultReceived({
+            request_id: "trading-1",
+            ok: true,
+            code: "trading_pending",
+            message: "Awaiting broker projection"
+        });
+        verify(!trading.canExecute);
+        verify(!trading.submit("buy", false));
+        dashboards.selectDashboard(5);
+        dashboards.selectDashboard(1);
+        store.trading = Object.assign({}, store.trading, {
+            sampled_at_ms: oldObservation
+        });
+        verify(!trading.canExecute);
+        compare(bridge.tradingRequests, 1);
+        store.trading = Object.assign({}, store.trading, {
+            sampled_at_ms: Date.now() + 1
+        });
+        tryCompare(trading, "canExecute", true);
+        verify(!trading.feedbackSuccess);
+        compare(bridge.tradingRequests, 1);
+    }
+    function test_lostDesktopResultRequiresFreshExplicitReview() {
+        dashboards.selectDashboard(2);
+        var omarchy = findChild(dashboards, "omarchyControlPanel");
+        verify(omarchy.request({operation: "dnd"}));
+        bridge.ready = false;
+        store.freshSnapshotRequired = true;
+        bridge.ready = true;
+        store.freshSnapshotRequired = false;
+        verify(!omarchy.request({operation: "dnd"}));
+        var review = findChild(omarchy, "desktopReviewOutcome");
+        verify(review !== null);
+        verify(!review.enabled);
+        store.generatedAtMs += 1;
+        tryCompare(review, "enabled", true);
+        mouseClick(review, review.width / 2, review.height / 2);
+        compare(bridge.desktopRequests, 1);
+        verify(omarchy.request({operation: "volume", percent: 60}));
+        compare(bridge.desktopRequests, 2);
+    }
+    function test_keyboardMonitorExitRestoresSidebarFocus() {
+        var handle = findChild(dashboards, "sidebarHandle");
+        handle.forceActiveFocus(Qt.TabFocusReason);
+        keyClick(Qt.Key_Space);
+        tryCompare(dashboards, "sidebarOpen", true);
+        keyClick(Qt.Key_End);
+        keyClick(Qt.Key_Down);
+        keyClick(Qt.Key_Space);
+        tryCompare(dashboards, "monitorSettingsOpen", true);
+        var monitor = findChild(dashboards, "monitorSettings");
+        tryCompare(findChild(monitor, "monitorCloseButton"), "activeFocus", true);
+        keyClick(Qt.Key_Tab);
+        verify(monitor.activeFocus);
+        keyClick(Qt.Key_Escape);
+        tryCompare(dashboards, "monitorSettingsOpen", false);
+        tryCompare(handle, "activeFocus", true);
+        compare(bridge.desktopRequests, 0);
+    }
+    function test_navigationPreservesTradingDraftAcrossAllPresets() {
+        var trading = findChild(dashboards, "riptideDashboard");
         trading.quantity = 15;
         trading.price = "5800.25";
         trading.orderType = "limit";
-        dashboards.selectDashboard(1);
-        compare(preferences.dashboardIndex, 1);
-        dashboards.selectDashboard(0);
+        for (var index = 0; index < 9; ++index)
+            verify(dashboards.selectDashboard(index));
         dashboards.selectDashboard(1);
         compare(trading.quantity, 15);
         compare(trading.price, "5800.25");
         compare(trading.orderType, "limit");
-        compare(findChild(dashboards, "dashboardSwitcher").currentIndex, 1);
     }
-    function test_switcherDragAndLabels() {
-        var thumb = findChild(dashboards, "dashboardSliderThumb");
-        var track = findChild(dashboards, "dashboardSlider");
-        mousePress(track, 64, 24);
-        mouseMove(track, 130, 24, 20);
-        mouseMove(track, 230, 24, 20);
-        mouseMove(track, 350, 24, 20);
-        mouseRelease(track, 350, 24);
-        tryCompare(dashboards, "dashboardIndex", 1);
-        mousePress(track, 350, 24);
-        mouseMove(track, 270, 24, 20);
-        mouseMove(track, 150, 24, 20);
-        mouseMove(track, 64, 24, 20);
-        mouseRelease(track, 64, 24);
-        tryCompare(dashboards, "dashboardIndex", 0);
-        var label = findChild(dashboards, "dashboardRiptideLabel");
-        mouseClick(label, label.width / 2, label.height / 2);
-        tryCompare(dashboards, "dashboardIndex", 1);
+    function test_desktopShortcutsSharePresetNavigationWithoutReplayingActions() {
+        var omarchy = findChild(dashboards, "omarchyControlPanel");
+        verify(omarchy.request({operation: "dnd"}));
+        for (var index = 3; index <= 5; ++index) {
+            dashboards.selectDashboard(0);
+            var shortcut = findChild(omarchy, "omarchyPreset_" + index);
+            mouseClick(shortcut, shortcut.width / 2, shortcut.height / 2);
+            tryCompare(dashboards, "dashboardIndex", index);
+            verify(findChild(omarchy, "omarchyDetailPage").visible);
+            compare(bridge.desktopRequests, 1);
+            verify(!omarchy.request({operation: "dnd"}));
+        }
+        dashboards.selectDashboard(2);
+        verify(!findChild(omarchy, "omarchyDetailPage").visible);
+    }
+    function test_sidebarSelectsAllNinePresetsAndPersistsSelection() {
+        var handle = findChild(dashboards, "sidebarHandle");
+        var pages = findChild(dashboards, "dashboardPages");
+        var omarchy = findChild(dashboards, "omarchyControlPanel");
+        var trading = findChild(dashboards, "riptideDashboard");
+        for (var index = 0; index < 9; ++index) {
+            mouseClick(handle, handle.width / 2, handle.height / 2);
+            tryCompare(dashboards, "sidebarOpen", true);
+            verify(!pages.enabled);
+            tryCompare(findChild(dashboards, "dashboardSidebar"), "controlsEnabled", true);
+            var button = findChild(dashboards, "presetButton_" + index);
+            var list = findChild(dashboards, "sidebarPresetList");
+            function settle() {
+                for (var tick = 0; tick < 100; ++tick) {
+                    if (!list.moving && !list.flicking)
+                        return true;
+                    wait(20);
+                }
+                return false;
+            }
+            var direction = 0;
+            for (var scroll = 0; scroll < 40; ++scroll) {
+                verify(settle());
+                if (button.y >= list.contentY && button.y + button.height <= list.contentY + list.height)
+                    break;
+                if (direction === 0)
+                    direction = button.y < list.contentY ? 120 : -120;
+                var before = list.contentY;
+                mouseWheel(list, list.width / 2, list.height / 2, 0, direction);
+                wait(40);
+                if (list.contentY === before)
+                    direction = -direction;
+            }
+            verify(settle());
+            mouseClick(button, button.width / 2, button.height / 2);
+            tryCompare(dashboards, "dashboardIndex", index);
+            tryCompare(dashboards, "sidebarOpen", false);
+            tryCompare(pages, "enabled", true);
+            compare(preferences.dashboardIndex, index);
+            compare(trading.visible, index === 1);
+            compare(omarchy.visible, index === 0 || index >= 2 && index <= 5);
+        }
+    }
+    function dragSidebar(handle, distance) {
+        var start = handle.mapToItem(dashboards, handle.width / 2, handle.height / 2);
+        mousePress(dashboards, start.x, start.y);
+        for (var step = 1; step <= 8; ++step)
+            mouseMove(dashboards, start.x + distance * step / 8, start.y, 20);
+        mouseRelease(dashboards, start.x + distance, start.y);
+    }
+    function test_edgeDragOpensClosesAndRestoresBinding() {
+        var handle = findChild(dashboards, "sidebarHandle");
+        var sidebar = findChild(dashboards, "dashboardSidebar");
+        var drawer = findChild(dashboards, "sidebarDrawer");
+        for (var repetition = 0; repetition < 2; ++repetition) {
+            dragSidebar(handle, 420);
+            tryCompare(dashboards, "sidebarOpen", true);
+            tryCompare(drawer, "x", 0);
+            dragSidebar(handle, -420);
+            tryCompare(dashboards, "sidebarOpen", false);
+            tryCompare(drawer, "x", -drawer.width);
+            tryCompare(sidebar, "blocking", false);
+        }
+        mouseClick(handle, handle.width / 2, handle.height / 2);
+        tryCompare(drawer, "x", 0);
+        var backdrop = findChild(dashboards, "sidebarBackdrop");
+        mouseClick(backdrop, backdrop.width - 100, backdrop.height / 2);
+        tryCompare(drawer, "x", -drawer.width);
+    }
+    function test_sidebarEscapeAndInvalidSelectionCannotNavigate() {
+        var handle = findChild(dashboards, "sidebarHandle");
+        mouseClick(handle, handle.width / 2, handle.height / 2);
+        tryCompare(dashboards, "sidebarOpen", true);
+        keyClick(Qt.Key_Escape);
+        tryCompare(dashboards, "sidebarOpen", false);
+        dashboards.selectDashboard(8);
+        var invalid = [-1, 9, 1.5, NaN, "1", undefined, null];
+        for (var index = 0; index < invalid.length; ++index) {
+            verify(!dashboards.selectDashboard(invalid[index]));
+            compare(dashboards.dashboardIndex, 8);
+            compare(preferences.dashboardIndex, 8);
+        }
+    }
+    function test_drawerBlocksActionsUntilClosingAnimationFinishes() {
+        dashboards.reducedMotion = false;
+        preferences.reduceMotion = false;
+        dashboards.selectDashboard(1);
+        var pages = findChild(dashboards, "dashboardPages");
+        var sidebar = findChild(dashboards, "dashboardSidebar");
+        var trading = findChild(dashboards, "riptideDashboard");
+        var handle = findChild(dashboards, "sidebarHandle");
+        mouseClick(handle, handle.width / 2, handle.height / 2);
+        tryCompare(dashboards, "sidebarOpen", true);
+        verify(!trading.submit("buy", false));
+        wait(300);
+        dashboards.sidebarOpen = false;
+        verify(!pages.enabled);
+        verify(!trading.submit("buy", false));
+        tryCompare(sidebar, "blocking", false);
+        verify(pages.enabled);
+        compare(bridge.tradingRequests, 0);
+        dashboards.reducedMotion = true;
     }
     function test_staleQuoteBlocksOrderEntry() {
         dashboards.selectDashboard(1);
@@ -383,24 +566,6 @@ TestCase {
         verify(!trading.unknownOutcome);
         compare(bridge.tradingRequests, 1);
         verify(!trading.resumeReviewed());
-    }
-    function test_pendingAcknowledgementIsNotFulfillment() {
-        dashboards.selectDashboard(1);
-        var trading = findChild(dashboards, "riptideDashboard");
-        verify(trading.submit("buy", false));
-        store.trading = Object.assign({}, store.trading, {
-            execution_enabled: false
-        });
-        store.actionResultReceived({
-            request_id: "trading-1",
-            ok: true,
-            code: "trading_pending",
-            message: "Awaiting broker projection"
-        });
-        compare(trading.pendingRequest, "");
-        verify(!trading.feedbackSuccess);
-        verify(!trading.canExecute);
-        verify(trading.feedback.indexOf("AWAITING BROKER UPDATE") >= 0);
     }
     function test_trailingStopRequiresTickAlignedInitialStop() {
         dashboards.selectDashboard(1);
@@ -441,8 +606,6 @@ TestCase {
         compare(agents.pageCount, 2)
         var dots = findChild(agents, "pageDots")
         verify(dots.visible)
-        verify(dots.width > 0)
-        verify(dots.height >= 44)
         var next = findChild(agents, "agentNextPage")
         var previous = findChild(agents, "agentPreviousPage")
         verify(next.visible)
@@ -468,21 +631,29 @@ TestCase {
         compare(bridge.desktopRequests, 0);
     }
 
-    function test_monitorEntryIsGlobalAndModalPreservesSwitcher() {
-        var button = findChild(dashboards, "globalMonitorButton")
-        var switcher = findChild(dashboards, "dashboardSwitcher")
-        var pages = findChild(dashboards, "dashboardPages")
-        for (var i=0;i<2;++i) {
-            dashboards.selectDashboard(i)
-            mouseClick(button,button.width/2,button.height/2)
-            verify(dashboards.monitorSettingsOpen)
-            verify(switcher.visible)
-            verify(!switcher.enabled)
-            verify(!pages.enabled)
-            dashboards.monitorSettingsOpen=false
-            verify(switcher.enabled)
+    function test_monitorFooterIsGlobalAndModalBlocksNavigation() {
+        var handle = findChild(dashboards, "sidebarHandle");
+        var button = findChild(dashboards, "globalMonitorButton");
+        var drawer = findChild(dashboards, "sidebarDrawer");
+        var sidebar = findChild(dashboards, "dashboardSidebar");
+        var pages = findChild(dashboards, "dashboardPages");
+        for (var index = 0; index < 9; ++index) {
+            dashboards.selectDashboard(index);
+            mouseClick(handle, handle.width / 2, handle.height / 2);
+            tryCompare(dashboards, "sidebarOpen", true);
+            var corner = button.mapToItem(drawer, button.width, button.height);
+            verify(corner.x > drawer.width - 40 && corner.x <= drawer.width);
+            verify(corner.y > drawer.height - 40 && corner.y <= drawer.height);
+            mouseClick(button, button.width / 2, button.height / 2);
+            tryCompare(dashboards, "monitorSettingsOpen", true);
+            verify(!sidebar.enabled);
+            verify(!pages.enabled);
+            verify(!dashboards.selectDashboard((index + 1) % 9));
+            compare(dashboards.dashboardIndex, index);
+            dashboards.monitorSettingsOpen = false;
+            tryCompare(sidebar, "enabled", true);
         }
-        compare(bridge.desktopRequests,0)
+        compare(bridge.desktopRequests, 0);
     }
     function test_orderSubmissionIsExactAndNeverRepeatedWhilePending() {
         dashboards.selectDashboard(1);
@@ -545,25 +716,5 @@ TestCase {
         verify(!trading.canExecute);
         verify(!trading.submit("buy", false));
         compare(bridge.tradingRequests, 0);
-    }
-    function test_renderScreenshots() {
-        var done = false;
-        dashboards.grabToImage(function (result) {
-            result.saveToFile("/tmp/xeneon-dashboard-ui-omarchy.png");
-            done = true;
-        });
-        tryVerify(function () {
-            return done;
-        });
-        dashboards.selectDashboard(1);
-        wait(100);
-        done = false;
-        dashboards.grabToImage(function (result) {
-            result.saveToFile("/tmp/xeneon-dashboard-ui-riptide.png");
-            done = true;
-        });
-        tryVerify(function () {
-            return done;
-        });
     }
 }

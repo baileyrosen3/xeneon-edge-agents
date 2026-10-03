@@ -633,21 +633,22 @@ Item {
                 objectName: "agentPreviousPage"
                 visible: root.compactLayout
                 theme: root.theme
-                width: 52
-                height: 48
+                width: 80
+                height: 64
+                labelPixelSize: 30
                 label: "‹"
                 enabled: root.controlCenterInteractive && root.currentPage > 0
                 onClicked: root.selectPage(root.currentPage - 1)
             }
             Text {
                 visible: root.compactLayout
-                width: 96
-                height: 48
+                width: 156
+                height: 64
                 text: "AGENTS " + (root.currentPage + 1) + "/" + root.pageCount
                 textFormat: Text.PlainText
                 color: root.theme.accent
                 font.family: "monospace"
-                font.pixelSize: 13
+                font.pixelSize: 20
                 font.weight: Font.DemiBold
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
@@ -656,8 +657,9 @@ Item {
                 objectName: "agentNextPage"
                 visible: root.compactLayout
                 theme: root.theme
-                width: 52
-                height: 48
+                width: 80
+                height: 64
+                labelPixelSize: 30
                 label: "›"
                 enabled: root.controlCenterInteractive && root.currentPage < root.pageCount - 1
                 onClicked: root.selectPage(root.currentPage + 1)

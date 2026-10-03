@@ -2,14 +2,13 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 
-Item {
+FocusScope {
     id: root
     required property var store
     required property var bridge
     required property var activity
     required property var theme
     property bool previewMode: false
-    property real headerActionWidth: 0
     readonly property var trading: store.trading || ({})
     readonly property var accounts: trading.accounts || []
     readonly property var quotes: trading.quotes || []
@@ -25,9 +24,11 @@ Item {
     property int tpTicks: 16
     property string activityTab: "positions"
     property string pendingRequest: ""
+    property double pendingAtMs: 0
+    property bool awaitingBroker: false
     property bool unknownOutcome: false
     property double unknownAtMs: 0
-    readonly property bool canReviewOutcome: unknownOutcome && pendingRequest !== "" && current && !previewMode && Number(trading.sampled_at_ms || 0) > unknownAtMs
+    readonly property bool canReviewOutcome: enabled && visible && unknownOutcome && pendingRequest !== "" && current && !previewMode && Number(trading.sampled_at_ms || 0) > unknownAtMs
     property string feedback: ""
     property bool feedbackSuccess: false
     property bool selectorOpen: false
@@ -45,7 +46,7 @@ Item {
     readonly property var selectedAccountRecord: find(accounts, "id", selectedAccount) || ({})
     readonly property var quote: find(quotes, "symbol", selectedSymbol) || ({})
     readonly property bool current: trading.connection === "connected" && trading.broker_connected === true && !store.freshSnapshotRequired
-    readonly property bool canExecute: current && !previewMode && bridge.ready && trading.execution_enabled === true && selectedAccountRecord.can_trade === true && pendingRequest === "" && !confirmationOpen && editingOrder === null && keypadField === "" && !selectorOpen
+    readonly property bool canExecute: enabled && visible && current && !previewMode && bridge.ready && trading.execution_enabled === true && selectedAccountRecord.can_trade === true && pendingRequest === "" && !confirmationOpen && editingOrder === null && keypadField === "" && !selectorOpen
     readonly property bool quoteCurrent: {
         clockTick;
         return Number(quote.updated_at_ms || 0) > 0 && Date.now() - Number(quote.updated_at_ms) <= 10000;
@@ -158,7 +159,7 @@ Item {
     }
     function request(payload) {
         activity.noteUserActivity();
-        if (!current || previewMode || !bridge.ready || trading.execution_enabled !== true || selectedAccountRecord.can_trade !== true || pendingRequest !== "" || typeof bridge.tradingAction !== "function")
+        if (!enabled || !visible || !current || previewMode || !bridge.ready || trading.execution_enabled !== true || selectedAccountRecord.can_trade !== true || pendingRequest !== "" || typeof bridge.tradingAction !== "function")
             return false;
         var requestId = bridge.tradingAction(payload);
         if (!requestId) {
@@ -166,6 +167,8 @@ Item {
             return false;
         }
         pendingRequest = String(requestId);
+        pendingAtMs = Date.now();
+        awaitingBroker = false;
         unknownOutcome = false;
         unknownAtMs = 0;
         feedback = "SENDING  ·  Awaiting server acknowledgement";
@@ -186,12 +189,25 @@ Item {
             return;
         activity.noteUserActivity();
         confirmationIsReview = false;
+        saveModalInvoker();
         confirmationTitle = title;
         confirmationDetail = detail;
         confirmationPayload = payload;
         confirmationOpen = true;
     }
+    function reconcilePending() {
+        if (!awaitingBroker || unknownOutcome || pendingRequest === "" || !current
+                || trading.execution_enabled !== true || Number(trading.sampled_at_ms || 0) <= pendingAtMs)
+            return;
+        pendingRequest = "";
+        pendingAtMs = 0;
+        awaitingBroker = false;
+        outcomeTimer.stop();
+        feedbackSuccess = false;
+        feedback = "BROKER UPDATED  ·  Review current orders and positions; acknowledgement is not fulfillment";
+    }
     function markUnknown(detail) {
+        awaitingBroker = false;
         unknownOutcome = true;
         unknownAtMs = Date.now();
         feedbackSuccess = false;
@@ -206,6 +222,7 @@ Item {
         confirmationIsReview = true;
         confirmationTitle = "REVIEW EXECUTION OUTCOME";
         confirmationDetail = "Review current orders and positions in account " + selectedAccount + " before resuming. " + orders.filter(working).length + " working orders and " + positions.length + " positions are currently reported. The previous request will never be resent.";
+        saveModalInvoker();
         confirmationPayload = ({});
         confirmationOpen = true;
         return true;
@@ -215,6 +232,8 @@ Item {
             return false;
         activity.noteUserActivity();
         pendingRequest = "";
+        pendingAtMs = 0;
+        awaitingBroker = false;
         unknownOutcome = false;
         unknownAtMs = 0;
         outcomeTimer.stop();
@@ -228,6 +247,7 @@ Item {
         if (!canExecute || !working(order))
             return;
         activity.noteUserActivity();
+        saveModalInvoker();
         editingOrder = order;
         editPrice = String(order.order_type.indexOf("stop") >= 0 ? order.stop_price || "" : order.price || "");
         editQuantity = String(order.quantity);
@@ -258,6 +278,8 @@ Item {
     }
     function openKeypad(field, title, value, integerOnly) {
         activity.noteUserActivity();
+        keypad.returnFocusItem = root.Window.window ? root.Window.window.activeFocusItem : null;
+        keypad.fallbackFocusItem = root;
         keypadField = field;
         keypad.title = title;
         keypad.value = String(value);
@@ -286,6 +308,7 @@ Item {
         target: root.store
         function onTradingChanged() {
             root.initializeSelection();
+            root.reconcilePending();
         }
         function onActionResultReceived(result) {
             if (String(result.request_id || "") !== root.pendingRequest || root.pendingRequest === "")
@@ -295,13 +318,23 @@ Item {
                 root.markUnknown(String(result.message || "Awaiting server reconciliation; order will not be resent"));
                 return;
             }
+            if (["trading_pending", "outcome_pending"].includes(code)) {
+                if (!root.unknownOutcome) {
+                    root.awaitingBroker = true;
+                    root.feedbackSuccess = false;
+                    root.feedback = "ACKNOWLEDGED  ·  AWAITING BROKER UPDATE  ·  " + String(result.message || result.code || "");
+                    root.reconcilePending();
+                }
+                return;
+            }
             root.pendingRequest = "";
+            root.pendingAtMs = 0;
+            root.awaitingBroker = false;
             root.unknownOutcome = false;
             root.unknownAtMs = 0;
             outcomeTimer.stop();
-            var awaiting = ["trading_pending", "outcome_pending"].includes(code);
-            root.feedbackSuccess = result.ok === true && !awaiting;
-            root.feedback = (awaiting ? "ACKNOWLEDGED  ·  AWAITING BROKER UPDATE  ·  " : result.ok === true ? "SERVER ACKNOWLEDGED  ·  " : "ACTION RESULT  ·  ") + String(result.message || result.code || "");
+            root.feedbackSuccess = result.ok === true;
+            root.feedback = (result.ok === true ? "SERVER ACKNOWLEDGED  ·  " : "ACTION RESULT  ·  ") + String(result.message || result.code || "");
         }
     }
     Timer {
@@ -316,6 +349,7 @@ Item {
         onTriggered: root.clockTick += 1
     }
     Column {
+        enabled: !root.modalOpen
         anchors.fill: parent
         anchors.margins: 20
         spacing: 12
@@ -351,7 +385,7 @@ Item {
                 font.pixelSize: 18
             }
             Text {
-                width: parent.width - 1280 - (root.unknownOutcome ? 292 : 0) - root.headerActionWidth
+                width: parent.width - 1280 - (root.unknownOutcome ? 292 : 0)
                 anchors.verticalCenter: parent.verticalCenter
                 text: {
                     root.clockTick;
@@ -545,6 +579,7 @@ Item {
                             onClicked: {
                                 root.activity.noteUserActivity();
                                 root.selectorKind = "symbol";
+                                root.saveModalInvoker();
                                 root.selectorOpen = true;
                             }
                         }
@@ -970,6 +1005,8 @@ Item {
         }
     }
     Item {
+        id: selectorLayer
+        enabled: root.keypadField === ""
         anchors.fill: parent
         visible: root.selectorOpen
         z: 60
@@ -1002,6 +1039,7 @@ Item {
                         verticalAlignment: Text.AlignVCenter
                     }
                     DashboardButton {
+                        id: selectorCloseButton
                         theme: root.theme
                         width: 140
                         label: "CLOSE"
@@ -1016,6 +1054,11 @@ Item {
                     clip: true
                     delegate: DashboardButton {
                         required property var modelData
+                        required property int index
+                        onActiveFocusChanged: {
+                            if (activeFocus)
+                                ListView.view.positionViewAtIndex(index, ListView.Contain);
+                        }
                         theme: root.theme
                         width: ListView.view.width
                         height: 66
@@ -1042,6 +1085,8 @@ Item {
         }
     }
     Item {
+        id: confirmationLayer
+        enabled: root.keypadField === ""
         anchors.fill: parent
         visible: root.confirmationOpen
         z: 70
@@ -1086,6 +1131,7 @@ Item {
                 Row {
                     spacing: 16
                     DashboardButton {
+                        id: confirmationBackButton
                         theme: root.theme
                         width: 392
                         height: 58
@@ -1114,6 +1160,8 @@ Item {
         }
     }
     Item {
+        id: editLayer
+        enabled: root.keypadField === ""
         anchors.fill: parent
         visible: root.editingOrder !== null
         z: 70
@@ -1198,6 +1246,7 @@ Item {
                 Row {
                     spacing: 16
                     DashboardButton {
+                        id: editCancelButton
                         theme: root.theme
                         width: 392
                         height: 58
@@ -1226,5 +1275,76 @@ Item {
             root.applyNumber(value);
         }
         onCancelled: root.keypadField = ""
+    }
+    readonly property Item activeModal: confirmationOpen ? confirmationLayer
+        : editingOrder !== null ? editLayer : selectorOpen ? selectorLayer : null
+    readonly property bool modalOpen: activeModal !== null || keypadField !== ""
+    property Item modalReturnFocus: null
+    function saveModalInvoker() {
+        if (!modalOpen)
+            modalReturnFocus = root.Window.window ? root.Window.window.activeFocusItem : null;
+    }
+    function collectFocusTargets(item, targets) {
+        if (!item.visible || !item.enabled)
+            return;
+        if (item.activeFocusOnTab)
+            targets.push(item);
+        for (var index = 0; index < item.children.length; ++index)
+            collectFocusTargets(item.children[index], targets);
+    }
+    function moveModalFocus(backwards) {
+        if (activeModal === null)
+            return;
+        var targets = [];
+        collectFocusTargets(activeModal, targets);
+        if (targets.length === 0)
+            return;
+        var currentIndex = -1;
+        for (var index = 0; index < targets.length; ++index)
+            if (targets[index].activeFocus) {
+                currentIndex = index;
+                break;
+            }
+        var next = currentIndex < 0 ? (backwards ? targets.length - 1 : 0)
+            : (currentIndex + (backwards ? -1 : 1) + targets.length) % targets.length;
+        targets[next].forceActiveFocus(backwards ? Qt.BacktabFocusReason : Qt.TabFocusReason);
+    }
+    function updateModalFocus() {
+        if (!enabled || !visible || keypadField !== "")
+            return;
+        if (activeModal !== null) {
+            var cancel = confirmationOpen ? confirmationBackButton
+                : editingOrder !== null ? editCancelButton : selectorCloseButton;
+            cancel.forceActiveFocus(Qt.OtherFocusReason);
+        } else if (modalReturnFocus !== null) {
+            if (modalReturnFocus.enabled && modalReturnFocus.visible)
+                modalReturnFocus.forceActiveFocus(Qt.OtherFocusReason);
+            modalReturnFocus = null;
+        }
+    }
+    onModalOpenChanged: Qt.callLater(root.updateModalFocus)
+    onEnabledChanged: Qt.callLater(root.updateModalFocus)
+    onVisibleChanged: Qt.callLater(root.updateModalFocus)
+    Keys.priority: Keys.BeforeItem
+    Keys.onPressed: function(event) {
+        if (!root.enabled || !root.visible || !root.modalOpen)
+            return;
+        if (root.keypadField !== "") {
+            keypad.handleKey(event);
+        } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+            root.moveModalFocus(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) !== 0);
+            event.accepted = true;
+        } else if (event.key === Qt.Key_Escape) {
+            event.accepted = true;
+            if (!event.isAutoRepeat) {
+                if (root.confirmationOpen)
+                    root.confirmationOpen = false;
+                else if (root.editingOrder !== null)
+                    root.editingOrder = null;
+                else
+                    root.selectorOpen = false;
+                root.activity.noteUserActivity();
+            }
+        }
     }
 }

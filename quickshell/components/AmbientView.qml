@@ -8,6 +8,7 @@ Item {
     property bool active: false
     property var theme: ThemePalette.fallback
     property bool reducedMotion: false
+    property bool radarMode: false
     property var agents: []
     property var health: ({})
     property var voice: ({})
@@ -391,13 +392,16 @@ Item {
             bottom: parent.bottom
             bottomMargin: 30
         }
-        text: "TOUCH TO WAKE"
+        text: root.radarMode
+            ? "TAP TO RETURN TO AGENT DASHBOARD"
+                + (root.agents.length > root.nodeLimit ? "  ·  " + root.nodeLimit + " OF " + root.agents.length + " AGENTS SHOWN" : "")
+            : "TOUCH TO WAKE"
         textFormat: Text.PlainText
         color: root.theme.textMuted
         opacity: root.nodeProgress
         font {
             family: "monospace"
-            pixelSize: 13
+            pixelSize: root.radarMode ? 22 : 13
             letterSpacing: 2
         }
     }
@@ -478,6 +482,8 @@ Item {
     }
 
     function centerTitle() {
+        if (radarMode)
+            return "AGENT RADAR"
         if (mode.indexOf("voice-") === 0)
             return "VOICE"
         if (mode === "error")

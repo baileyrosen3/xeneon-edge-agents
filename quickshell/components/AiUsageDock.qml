@@ -10,6 +10,7 @@ Item {
     property var sessions: []
     property string managerLabel: "HERDR"
     property bool reducedMotion: false
+    property bool expanded: false
     property int clockTick: 0
 
     readonly property var providerIds: ["claude", "codex", "opencode"]
@@ -159,6 +160,17 @@ Item {
             : "PROVIDER QUOTA"
     }
 
+    function unavailableDetail(provider) {
+        var status = providerStatus(provider)
+        if (status === "UNTRUSTED")
+            return "Source is untrusted.\nUsage values are not shown."
+        if (status === "LIMIT REACHED")
+            return "Provider limit reached.\nNo usable capacity reading."
+        if (status === "BLOCKED")
+            return "Provider access is blocked.\nNo usable capacity reading."
+        return "No usable capacity reading.\nUpdate age is shown below."
+    }
+
     function statusColor(provider, accent) {
         var state = providerStatus(provider)
         if (state === "LIVE")
@@ -196,18 +208,19 @@ Item {
 
         visible: usageWindow !== null
         width: parent ? parent.width : 0
-        height: visible ? 18 : 0
+        height: visible ? (root.expanded ? 58 : 18) : 0
 
-        Row {
+        Item {
             anchors.fill: parent
-            spacing: 8
 
             Text {
                 id: windowLabel
 
                 objectName: "usageLabel_" + providerId + "_" + windowRole
-                width: Math.max(128, Math.ceil(implicitWidth) + 2)
-                anchors.verticalCenter: parent.verticalCenter
+                width: root.expanded
+                    ? Math.max(0, parent.width - 90 - 224 - 24)
+                    : Math.max(128, Math.ceil(implicitWidth) + 2)
+                y: root.expanded ? 0 : (parent.height - height) / 2
                 text: usageWindow === null
                     ? ""
                     : String(usageWindow.label || "USAGE").toUpperCase()
@@ -216,21 +229,23 @@ Item {
                 elide: Text.ElideRight
                 font {
                     family: "monospace"
-                    pixelSize: 10
+                    pixelSize: root.expanded ? 26 : 10
                     weight: Font.DemiBold
                     letterSpacing: 0.4
                 }
             }
 
             Rectangle {
-                width: Math.max(
+                id: usageBar
+
+                x: root.expanded ? 0 : windowLabel.width + 8
+                y: root.expanded ? 40 : (parent.height - height) / 2
+                width: root.expanded ? parent.width : Math.max(
                     60,
-                    parent.width - windowLabel.width - 42 - 112
-                        - parent.spacing * 3
+                    parent.width - windowLabel.width - 42 - 112 - 24
                 )
-                height: 6
-                anchors.verticalCenter: parent.verticalCenter
-                radius: 3
+                height: root.expanded ? 10 : 6
+                radius: height / 2
                 color: root.theme.surfaceRaised
 
                 Rectangle {
@@ -253,8 +268,10 @@ Item {
             }
 
             Text {
-                width: 42
-                anchors.verticalCenter: parent.verticalCenter
+                x: root.expanded ? parent.width - width - 224 - 12
+                    : usageBar.x + usageBar.width + 8
+                y: root.expanded ? 0 : (parent.height - height) / 2
+                width: root.expanded ? 90 : 42
                 text: providerAvailable
                     ? root.percent(usageWindow) + "%"
                     : "—"
@@ -265,14 +282,16 @@ Item {
                 horizontalAlignment: Text.AlignRight
                 font {
                     family: "monospace"
-                    pixelSize: 11
+                    pixelSize: root.expanded ? 28 : 11
                     weight: Font.Bold
                 }
             }
 
             Text {
-                width: 112
-                anchors.verticalCenter: parent.verticalCenter
+                x: root.expanded ? parent.width - width
+                    : usageBar.x + usageBar.width + 8 + 42 + 8
+                y: root.expanded ? 4 : (parent.height - height) / 2
+                width: root.expanded ? 224 : 112
                 text: root.resetLabel(usageWindow)
                 textFormat: Text.PlainText
                 color: root.theme.textMuted
@@ -280,7 +299,7 @@ Item {
                 horizontalAlignment: Text.AlignRight
                 font {
                     family: "monospace"
-                    pixelSize: 9
+                    pixelSize: root.expanded ? 22 : 9
                     letterSpacing: 0.3
                 }
             }
@@ -292,6 +311,7 @@ Item {
         spacing: 14
 
         Rectangle {
+            visible: !root.expanded
             width: 286
             height: parent.height
             radius: 16
@@ -368,7 +388,8 @@ Item {
                         : root.theme.magenta
 
                 objectName: "usageCard_" + modelData
-                width: (root.width - 286 - 42) / 3
+                width: root.expanded ? (root.width - 28) / 3
+                    : (root.width - 286 - 42) / 3
                 height: parent.height
                 radius: 16
                 color: root.theme.surface
@@ -377,47 +398,51 @@ Item {
                     ? Qt.alpha(accent, provider.stale ? 0.34 : 0.62)
                     : root.theme.border
 
-                Row {
+                Item {
                     id: providerHeader
 
                     anchors {
                         left: parent.left
                         right: parent.right
                         top: parent.top
-                        leftMargin: 18
-                        rightMargin: 18
-                        topMargin: 10
+                        leftMargin: root.expanded ? 24 : 18
+                        rightMargin: root.expanded ? 24 : 18
+                        topMargin: root.expanded ? 18 : 10
                     }
-                    height: 22
-                    spacing: 9
+                    height: root.expanded ? 80 : 22
 
                     Text {
-                        width: Math.min(132, implicitWidth)
+                        id: providerName
+
+                        width: root.expanded
+                            ? Math.max(0, parent.width - statusText.width - 16)
+                            : Math.min(132, implicitWidth)
                         text: String(parent.parent.provider.label || "").toUpperCase()
                         textFormat: Text.PlainText
                         color: root.theme.textPrimary
                         elide: Text.ElideRight
                         font {
                             family: "monospace"
-                            pixelSize: 14
+                            pixelSize: root.expanded ? 34 : 14
                             weight: Font.Bold
                             letterSpacing: 0.7
                         }
                     }
 
                     Text {
-                        width: Math.max(
+                        x: root.expanded ? 0 : providerName.width + 9
+                        y: root.expanded ? 48 : (parent.height - height) / 2
+                        width: root.expanded ? parent.width : Math.max(
                             60,
                             parent.width - statusText.width - x - 9
                         )
-                        anchors.verticalCenter: parent.verticalCenter
                         text: root.providerDetail(parent.parent.provider)
                         textFormat: Text.PlainText
                         color: root.theme.textMuted
                         elide: Text.ElideRight
                         font {
                             family: "monospace"
-                            pixelSize: 9
+                            pixelSize: root.expanded ? 24 : 9
                             letterSpacing: 0.4
                         }
                     }
@@ -425,7 +450,8 @@ Item {
                     Text {
                         id: statusText
 
-                        anchors.verticalCenter: parent.verticalCenter
+                        x: parent.width - width
+                        y: root.expanded ? 3 : (parent.height - height) / 2
                         text: parent.parent.statusLabel
                         textFormat: Text.PlainText
                         color: root.readableColor(
@@ -436,7 +462,7 @@ Item {
                         )
                         font {
                             family: "monospace"
-                            pixelSize: 9
+                            pixelSize: root.expanded ? 30 : 9
                             weight: Font.Bold
                             letterSpacing: 0.6
                         }
@@ -444,15 +470,16 @@ Item {
                 }
 
                 Column {
+                    visible: !root.expanded || parent.provider.available
                     anchors {
                         left: parent.left
                         right: parent.right
                         top: providerHeader.bottom
-                        leftMargin: 18
-                        rightMargin: 18
-                        topMargin: 4
+                        leftMargin: root.expanded ? 24 : 18
+                        rightMargin: root.expanded ? 24 : 18
+                        topMargin: root.expanded ? 12 : 4
                     }
-                    spacing: 3
+                    spacing: root.expanded ? 12 : 3
 
                     UsageLine {
                         width: parent.width
@@ -475,43 +502,96 @@ Item {
                     }
                 }
 
-                Row {
+                Column {
+                    visible: root.expanded && (!parent.provider.available
+                        || (parent.primaryUsage === null
+                            && parent.secondaryUsage === null))
+                    anchors {
+                        left: parent.left
+                        right: parent.right
+                        top: providerHeader.bottom
+                        leftMargin: 24
+                        rightMargin: 24
+                        topMargin: 24
+                    }
+                    spacing: 12
+
+                    Text {
+                        width: parent.width
+                        text: parent.parent.provider.available
+                            ? "NO CAPACITY WINDOWS"
+                            : "CAPACITY UNAVAILABLE"
+                        textFormat: Text.PlainText
+                        color: root.readableColor(root.theme.textPrimary)
+                        elide: Text.ElideRight
+                        font {
+                            family: "monospace"
+                            pixelSize: 30
+                            weight: Font.DemiBold
+                        }
+                    }
+
+                    Text {
+                        width: parent.width
+                        text: parent.parent.provider.available
+                            ? "No usage windows were reported."
+                            : root.unavailableDetail(parent.parent.provider)
+                        textFormat: Text.PlainText
+                        color: root.readableColor(root.theme.textSecondary)
+                        wrapMode: Text.WordWrap
+                        font {
+                            family: "monospace"
+                            pixelSize: 24
+                        }
+                    }
+                }
+
+                Item {
                     id: providerFooter
 
                     anchors {
                         left: parent.left
                         right: parent.right
                         bottom: parent.bottom
-                        leftMargin: 18
-                        rightMargin: 18
-                        bottomMargin: 9
+                        leftMargin: root.expanded ? 24 : 18
+                        rightMargin: root.expanded ? 24 : 18
+                        bottomMargin: root.expanded ? 18 : 9
                     }
-                    spacing: 10
+                    height: root.expanded ? 62
+                        : Math.max(activityText.implicitHeight, updateText.implicitHeight)
 
                     Text {
-                        width: parent.width * 0.58
+                        id: activityText
+
+                        width: root.expanded ? parent.width : parent.width * 0.58
                         text: parent.parent.activityLabel
                         textFormat: Text.PlainText
                         color: root.theme.textSecondary
                         elide: Text.ElideRight
                         font {
                             family: "monospace"
-                            pixelSize: 9
+                            pixelSize: root.expanded ? 24 : 9
                             weight: Font.DemiBold
                             letterSpacing: 0.3
                         }
                     }
 
                     Text {
-                        width: parent.width - parent.children[0].width - 10
+                        id: updateText
+
+                        x: root.expanded ? 0 : activityText.width + 10
+                        y: root.expanded ? 34 : 0
+                        width: root.expanded ? parent.width
+                            : parent.width - activityText.width - 10
                         text: root.updatedLabel(parent.parent.provider)
                         textFormat: Text.PlainText
                         color: root.theme.textMuted
                         elide: Text.ElideRight
-                        horizontalAlignment: Text.AlignRight
+                        horizontalAlignment: root.expanded
+                            ? Text.AlignLeft : Text.AlignRight
                         font {
                             family: "monospace"
-                            pixelSize: 9
+                            pixelSize: root.expanded ? 24 : 9
                             letterSpacing: 0.3
                         }
                     }

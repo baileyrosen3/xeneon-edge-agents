@@ -19,11 +19,18 @@ provider capacity, and connected tool status.
 
 - A glanceable command center and animated Ambient view for Herdr agents or
   T3 Code threads, switched with the on-screen Manager control.
+- Nine preset pages behind a left-edge slide-out sidebar, with Agents first,
+  Riptide trading second, and Monitor settings in the sidebar's bottom-right.
 - Exact, fail-closed display and touchscreen identity checks.
 - Typed, narrowly scoped agent actions mediated by the Rust daemon.
 - Normalized Claude, Codex, OpenCode, host-health, and connected-tool status.
 - Reversible user-owned installation in XDG locations; no packaged Omarchy
   files are modified.
+
+Tap or slide the left-edge grip to open the preset sidebar; selecting a page
+closes it and remembers your choice. The other presets reuse desktop controls,
+system details, audio/display, theme/power, AI usage, agent radar, and palette
+settings. See [dashboards](docs/dashboards.md) for the page map and action gates.
 
 Production output matching is fail-closed: the portal creates no surface
 unless the commissioned EDID, model, serial, and touchscreen all match exactly

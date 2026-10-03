@@ -112,6 +112,7 @@ Item {
         return Math.floor(elapsed) + "S"
     }
 
+
     function processLine() {
         if (agent === null)
             return ""
@@ -313,6 +314,7 @@ Item {
         }
     }
 
+
     Item {
         id: openZone
 
@@ -327,16 +329,41 @@ Item {
             bottomMargin: root.hasGuardedActions ? 8 : 18
         }
 
-        Row {
-            id: titleRow
+        Text {
+            id: displayName
 
+            objectName: "agentDisplayName"
             anchors {
                 left: parent.left
                 right: parent.right
                 top: parent.top
             }
-            height: 36
-            spacing: 12
+            text: root.agent === null
+                ? ""
+                : String(root.agent.display_name || "")
+            wrapMode: Text.WordWrap
+            maximumLineCount: 2
+            elide: Text.ElideMiddle
+            textFormat: Text.PlainText
+            color: root.readablePrimary
+            font {
+                family: "monospace"
+                pixelSize: 23
+                weight: Font.Bold
+            }
+        }
+
+        Row {
+            id: stateRow
+
+            anchors {
+                left: parent.left
+                right: parent.right
+                top: displayName.bottom
+                topMargin: 8
+            }
+            height: 28
+            spacing: 10
 
             Rectangle {
                 width: 12
@@ -344,23 +371,6 @@ Item {
                 radius: 6
                 anchors.verticalCenter: parent.verticalCenter
                 color: root.accent
-            }
-
-            Text {
-                objectName: "agentDisplayName"
-                width: titleRow.width - statePill.width - 36
-                anchors.verticalCenter: parent.verticalCenter
-                text: root.agent === null
-                    ? ""
-                    : String(root.agent.display_name || "")
-                textFormat: Text.PlainText
-                color: root.readablePrimary
-                elide: Text.ElideRight
-                font {
-                    family: "monospace"
-                    pixelSize: 23
-                    weight: Font.Bold
-                }
             }
 
             Rectangle {
@@ -389,35 +399,33 @@ Item {
                     }
                 }
             }
-        }
+            Text {
+                id: processText
 
-        Text {
-            id: processText
-
-            anchors {
-                left: parent.left
-                right: parent.right
-                top: titleRow.bottom
-                topMargin: 9
-            }
-            text: root.processLine()
-            textFormat: Text.PlainText
-            color: root.readableAccent
-            elide: Text.ElideRight
-            font {
-                family: "monospace"
-                pixelSize: 17
-                weight: Font.DemiBold
-                letterSpacing: 0.7
+                width: Math.max(0, stateRow.width - statePill.width - 32)
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.agent === null ? ""
+                    : root.observedDuration(root.agent.observed_for_seconds)
+                        + " IN STATE"
+                textFormat: Text.PlainText
+                color: root.readableAccent
+                elide: Text.ElideRight
+                font {
+                    family: "monospace"
+                    pixelSize: 17
+                    weight: Font.DemiBold
+                    letterSpacing: 0.7
+                }
             }
         }
 
         Text {
             objectName: "agentSpaceName"
+            visible: y + height + 6 <= contextText.y
             anchors {
                 left: parent.left
                 right: parent.right
-                top: processText.bottom
+                top: stateRow.bottom
                 topMargin: 6
             }
             text: root.spaceLine().toUpperCase()
@@ -433,6 +441,8 @@ Item {
         }
 
         Text {
+            id: contextText
+
             anchors {
                 left: parent.left
                 right: parent.right

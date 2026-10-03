@@ -1,7 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 
-Item {
+FocusScope {
     id: root
     required property var store
     required property var bridge
@@ -36,9 +36,57 @@ Item {
     readonly property var rgbControls: ["red_gain", "green_gain", "blue_gain"]
     readonly property var preset: control("color_preset", "Color preset")
     visible: open || opacity > 0
+    enabled: open
     opacity: open ? 1 : 0
     Behavior on opacity { NumberAnimation { duration: root.reducedMotion ? 0 : 160 } }
     z: 200
+    Accessible.role: Accessible.Dialog
+    Accessible.name: "Monitor hardware settings"
+    Accessible.ignored: !open
+    function focusTargets(item, targets) {
+        if (!item.visible || !item.enabled) return
+        if (item.activeFocusOnTab) targets.push(item)
+        for (var i = 0; i < item.children.length; ++i)
+            focusTargets(item.children[i], targets)
+    }
+    function moveFocus(backwards) {
+        var targets = []
+        focusTargets(panel, targets)
+        if (!targets.length) { root.forceActiveFocus(Qt.TabFocusReason); return }
+        var current = -1
+        for (var i = 0; i < targets.length; ++i)
+            if (targets[i].activeFocus) { current = i; break }
+        var next = current < 0 ? (backwards ? targets.length - 1 : 0)
+            : (current + (backwards ? -1 : 1) + targets.length) % targets.length
+        targets[next].forceActiveFocus(backwards ? Qt.BacktabFocusReason : Qt.TabFocusReason)
+    }
+    function acquireFocus() {
+        if (open && keypadControl === "")
+            closeButton.forceActiveFocus(Qt.OtherFocusReason)
+    }
+    onOpenChanged: {
+        if (open) Qt.callLater(acquireFocus)
+        else keypadControl = ""
+    }
+    Component.onCompleted: { if (open) Qt.callLater(acquireFocus) }
+    Keys.priority: Keys.BeforeItem
+    Keys.onPressed: function(event) {
+        if (!root.open) return
+        if (root.keypadControl !== "") {
+            keypad.handleKey(event)
+            return
+        }
+        if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+            root.moveFocus(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) !== 0)
+            event.accepted = true
+        } else if (event.key === Qt.Key_Escape) {
+            event.accepted = true
+            if (!event.isAutoRepeat) {
+                root.activity.noteUserActivity()
+                root.closeRequested()
+            }
+        }
+    }
 
     function control(id, label) {
         var controls = monitor.controls || []
@@ -155,10 +203,11 @@ Item {
         dispatchQueued()
         return !needsRefresh
     }
-    function editNumber(id) {
+    function editNumber(id, invoker) {
         var record = control(id)
         if (!writable(record) || pendingRequest !== "" || queuedControls.length > 0) return
         activity.noteUserActivity()
+        keypad.returnFocusItem = invoker || null
         keypadControl = id
         keypad.title = String(record.label).toUpperCase() + "  ·  0–" + record.maximum
         keypad.value = String(currentDraft(record))
@@ -248,6 +297,7 @@ Item {
     }
     DashboardCard {
         id: panel
+        enabled: root.keypadControl === ""
         objectName: "monitorSettingsCard"
         anchors.centerIn: parent
         width: parent.width - 48
@@ -284,6 +334,7 @@ Item {
                 }
                 DashboardButton {
                     objectName: "monitorRefreshButton"
+                    Keys.forwardTo: [root]
                     theme: root.theme
                     width: 300
                     height: 48
@@ -292,6 +343,8 @@ Item {
                     onClicked: root.refresh()
                 }
                 DashboardButton {
+                    id: closeButton
+                    Keys.forwardTo: [root]
                     objectName: "monitorCloseButton"
                     theme: root.theme
                     width: 160
@@ -353,6 +406,7 @@ Item {
                             model: root.pictureControls
                             MonitorControl {
                                 required property string modelData
+                                keyboardScope: root
                                 objectName: "monitorControl_" + modelData
                                 width: controlsColumn.cardWidth
                                 height: 144
@@ -365,7 +419,7 @@ Item {
                                 numberEnabled: writable && root.pendingRequest === "" && root.queuedControls.length === 0
                                 onDraftEdited: function(value) { root.requestSet(modelData, value) }
                                 onValueReleased: function(value) { root.requestSet(modelData, value) }
-                                onNumberRequested: root.editNumber(modelData)
+                                onNumberRequested: function(invoker) { root.editNumber(modelData, invoker) }
                             }
                         }
                     }
@@ -375,6 +429,7 @@ Item {
                             model: root.rgbControls
                             MonitorControl {
                                 required property string modelData
+                                keyboardScope: root
                                 objectName: "monitorControl_" + modelData
                                 width: controlsColumn.cardWidth
                                 height: 144
@@ -387,13 +442,14 @@ Item {
                                 numberEnabled: writable && root.pendingRequest === "" && root.queuedControls.length === 0
                                 onDraftEdited: function(value) { root.requestSet(modelData, value) }
                                 onValueReleased: function(value) { root.requestSet(modelData, value) }
-                                onNumberRequested: root.editNumber(modelData)
+                                onNumberRequested: function(invoker) { root.editNumber(modelData, invoker) }
                             }
                         }
                     }
                     Row {
                         spacing: 10
                         MonitorControl {
+                            keyboardScope: root
                             objectName: "monitorControl_sharpness"
                             width: controlsColumn.cardWidth
                             height: 170
@@ -406,7 +462,7 @@ Item {
                             numberEnabled: writable && root.pendingRequest === "" && root.queuedControls.length === 0
                             onDraftEdited: function(value) { root.requestSet("sharpness", value) }
                             onValueReleased: function(value) { root.requestSet("sharpness", value) }
-                            onNumberRequested: root.editNumber("sharpness")
+                            onNumberRequested: function(invoker) { root.editNumber("sharpness", invoker) }
                         }
                         DashboardCard {
                             objectName: "monitorColorPresets"
@@ -436,6 +492,7 @@ Item {
                                     visible: root.preset.supported !== true
                                 }
                                 Flickable {
+                                    id: presetList
                                     width: parent.width
                                     height: 104
                                     contentHeight: presetGrid.height
@@ -452,6 +509,14 @@ Item {
                                             DashboardButton {
                                                 required property var modelData
                                                 objectName: "monitorPreset_" + modelData.value
+                                                Keys.forwardTo: [root]
+                                                onActiveFocusChanged: {
+                                                    if (!activeFocus) return
+                                                    if (y < presetList.contentY)
+                                                        presetList.contentY = y
+                                                    else if (y + height > presetList.contentY + presetList.height)
+                                                        presetList.contentY = y + height - presetList.height
+                                                }
                                                 theme: root.theme
                                                 width: (presetGrid.width - 24) / 4
                                                 height: 44
@@ -487,6 +552,7 @@ Item {
         theme: root.theme
         open: root.keypadControl !== ""
         integerOnly: true
+        fallbackFocusItem: closeButton
         onCancelled: root.keypadControl = ""
         onAccepted: function(value) {
             var id = root.keypadControl

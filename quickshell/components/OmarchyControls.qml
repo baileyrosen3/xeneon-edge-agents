@@ -15,11 +15,24 @@ Item {
     readonly property var health: store.health || ({})
     readonly property bool actionable: !previewMode && bridge.ready && !store.freshSnapshotRequired
     property string pendingRequest: ""
+    property bool unknownOutcome: false
+    property double unknownAtMs: 0
+    readonly property bool canReviewOutcome: visible && enabled && actionable && unknownOutcome
+        && pendingRequest !== "" && Number(store.generatedAtMs || 0) > unknownAtMs
+    onActionableChanged: {
+        if (!actionable && pendingRequest !== "")
+            markUnknown("Connection changed before the action result arrived.");
+    }
     property string feedback: ""
-    property bool drawerOpen: false
-    property string drawerTab: "system"
-    property real headerActionWidth: 0
+    property string preset: "overview"
+    readonly property bool embeddedPage: preset === "system" || preset === "audio" || preset === "desktop"
+    readonly property string pageTab: preset
+    function listAvailable(value) {
+        return Array.isArray(value) && value.length > 0;
+    }
     signal monitorRequested
+    signal presetRequested(int index)
+    // Presentation only; dispatch authority stays with the daemon.
     property var histories: ({})
     property int clockTick: 0
     readonly property var metrics: [
@@ -88,6 +101,8 @@ Item {
         histories = next;
     }
     function request(payload) {
+        if (!root.visible || !root.enabled)
+            return false;
         activity.noteUserActivity();
         if (!actionable || pendingRequest !== "" || typeof bridge.omarchyAction !== "function")
             return false;
@@ -97,13 +112,29 @@ Item {
             return false;
         }
         pendingRequest = String(id);
+        unknownOutcome = false;
+        unknownAtMs = 0;
+        outcomeTimer.restart();
         feedback = "Applying…";
         return true;
     }
-    function showDrawer(tab) {
+    function markUnknown(detail) {
+        if (pendingRequest === "" || unknownOutcome)
+            return;
+        unknownOutcome = true;
+        unknownAtMs = Number(store.generatedAtMs || 0);
+        outcomeTimer.stop();
+        feedback = "OUTCOME UNKNOWN  ·  " + detail + " Review current desktop state before resuming; the action will not be resent.";
+    }
+    function resumeReviewed() {
+        if (!canReviewOutcome)
+            return false;
         activity.noteUserActivity();
-        drawerTab = tab;
-        drawerOpen = true;
+        pendingRequest = "";
+        unknownOutcome = false;
+        unknownAtMs = 0;
+        feedback = "Resumed after review · previous action was not resent";
+        return true;
     }
     function bytes(value) {
         var n = Number(value || 0);
@@ -119,8 +150,16 @@ Item {
             if (String(result.request_id || "") !== root.pendingRequest || root.pendingRequest === "")
                 return;
             root.pendingRequest = "";
+            root.unknownOutcome = false;
+            root.unknownAtMs = 0;
+            outcomeTimer.stop();
             root.feedback = result.ok === true ? "Applied" : String(result.message || result.code || "Action failed");
         }
+    }
+    Timer {
+        id: outcomeTimer
+        interval: 15000
+        onTriggered: root.markUnknown("No response was received.")
     }
     Timer {
         interval: 1000
@@ -132,11 +171,12 @@ Item {
         anchors.fill: parent
         anchors.margins: 18
         spacing: 10
+        visible: !root.embeddedPage
         Row {
             width: parent.width
             height: 38
             Text {
-                width: parent.width - 220 - root.headerActionWidth
+                width: parent.width - 220
                 text: "OMARCHY // CONTROL"
                 textFormat: Text.PlainText
                 color: root.theme.textPrimary
@@ -399,28 +439,29 @@ Item {
                     },
                     {
                         label: "SYSTEM DETAILS",
-                        drawer: "system"
+                        presetIndex: 3
                     },
                     {
                         label: "AUDIO / DISPLAY",
-                        drawer: "audio"
+                        presetIndex: 4
                     },
                     {
                         label: "THEME / POWER",
-                        drawer: "desktop"
+                        presetIndex: 5
                     }
                 ]
                 DashboardButton {
                     required property var modelData
+                    objectName: modelData.presetIndex !== undefined ? "omarchyPreset_" + modelData.presetIndex : ""
                     theme: root.theme
                     width: (root.width - 52) / 3
                     height: 48
                     label: modelData.label
                     selected: modelData.active === true
-                    enabled: modelData.drawer !== undefined || (root.actionable && root.pendingRequest === "")
+                    enabled: modelData.presetIndex !== undefined || (root.actionable && root.pendingRequest === "")
                     onClicked: {
-                        if (modelData.drawer !== undefined)
-                            root.showDrawer(modelData.drawer);
+                        if (modelData.presetIndex !== undefined)
+                            root.presetRequested(modelData.presetIndex);
                         else
                             root.request({
                                 operation: modelData.operation
@@ -431,50 +472,40 @@ Item {
         }
         Text {
             width: parent.width
-            height: 20
+            height: implicitHeight
             text: root.previewMode ? "PREVIEW  ·  desktop actions disabled" : root.feedback || String(root.model.detail || "Native desktop controls")
             textFormat: Text.PlainText
             color: root.previewMode ? root.theme.needsHelp : root.theme.textMuted
-            font.pixelSize: 13
-            elide: Text.ElideRight
+            font.pixelSize: root.unknownOutcome ? 18 : 13
+            wrapMode: Text.WordWrap
         }
     }
     Item {
+        objectName: "omarchyDetailPage"
         anchors.fill: parent
-        visible: root.drawerOpen
+        visible: root.embeddedPage
         z: 50
-        Rectangle {
-            anchors.fill: parent
-            color: Qt.alpha(root.theme.canvas, 0.94)
-            TapHandler {}
-        }
         Column {
             anchors.fill: parent
-            anchors.margins: 20
+            anchors.margins: 18
             spacing: 14
             Row {
                 width: parent.width
                 spacing: 12
                 Text {
-                    width: parent.width - 132
+                    width: parent.width
                     height: 48
-                    text: root.drawerTab === "system" ? "SYSTEM DETAILS" : root.drawerTab === "audio" ? "AUDIO / DISPLAY" : "THEME / POWER"
+                    text: root.pageTab === "system" ? "SYSTEM DETAILS" : root.pageTab === "audio" ? "AUDIO / DISPLAY" : "THEME / POWER"
                     textFormat: Text.PlainText
                     color: root.theme.textPrimary
                     font.family: "monospace"
-                    font.pixelSize: 22
+                    font.pixelSize: 32
                     verticalAlignment: Text.AlignVCenter
-                }
-                DashboardButton {
-                    theme: root.theme
-                    width: 120
-                    label: "CLOSE"
-                    onClicked: root.drawerOpen = false
                 }
             }
             Flickable {
                 width: parent.width
-                height: root.height - 110
+                height: parent.height - 144
                 contentHeight: drawerContent.height
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
@@ -485,29 +516,36 @@ Item {
                     Column {
                         width: parent.width
                         spacing: 10
-                        visible: root.drawerTab === "system"
+                        visible: root.pageTab === "system"
                         Text {
-                            text: "STORAGE"
+                            text: root.listAvailable(root.model.storage) ? "STORAGE" : "STORAGE  ·  UNAVAILABLE"
                             textFormat: Text.PlainText
-                            color: root.theme.accent
+                            color: root.listAvailable(root.model.storage) ? root.theme.accent : root.theme.textMuted
                             font.family: "monospace"
                             font.pixelSize: 18
                         }
                         Repeater {
                             model: root.model.storage || []
-                            DashboardButton {
+                            DashboardCard {
                                 required property var modelData
                                 theme: root.theme
                                 width: drawerContent.width
-                                height: 66
-                                label: String(modelData.mount || "/")
-                                detail: root.bytes(modelData.available_bytes) + " FREE / " + root.bytes(modelData.total_bytes) + "  ·  " + Number(modelData.used_percent || 0).toFixed(0) + "% USED"
+                                height: 82
+                                Accessible.role: Accessible.StaticText
+                                Accessible.name: String(modelData.mount || "/") + ", " + Number(modelData.used_percent || 0).toFixed(0) + " percent used"
+                                Column {
+                                    anchors.fill: parent
+                                    anchors.margins: 12
+                                    spacing: 6
+                                    Text { text: String(parent.parent.modelData.mount || "/"); textFormat: Text.PlainText; color: root.theme.textPrimary; font.pixelSize: 24 }
+                                    Text { text: root.bytes(parent.parent.modelData.available_bytes) + " FREE / " + root.bytes(parent.parent.modelData.total_bytes) + "  ·  " + Number(parent.parent.modelData.used_percent || 0).toFixed(0) + "% USED"; textFormat: Text.PlainText; color: root.theme.textMuted; font.pixelSize: 18 }
+                                }
                             }
                         }
                         Text {
-                            text: "TOP CPU PROCESSES"
+                            text: root.listAvailable(root.model.processes) ? "TOP CPU PROCESSES" : "TOP CPU PROCESSES  ·  UNAVAILABLE"
                             textFormat: Text.PlainText
-                            color: root.theme.accent
+                            color: root.listAvailable(root.model.processes) ? root.theme.accent : root.theme.textMuted
                             font.family: "monospace"
                             font.pixelSize: 18
                         }
@@ -535,11 +573,11 @@ Item {
                     Column {
                         width: parent.width
                         spacing: 10
-                        visible: root.drawerTab === "audio"
+                        visible: root.pageTab === "audio"
                         Text {
-                            text: "AUDIO OUTPUT"
+                            text: root.listAvailable(root.audio.outputs) ? "AUDIO OUTPUT" : "AUDIO OUTPUT  ·  UNAVAILABLE"
                             textFormat: Text.PlainText
-                            color: root.theme.accent
+                            color: root.listAvailable(root.audio.outputs) ? root.theme.accent : root.theme.textMuted
                             font.family: "monospace"
                             font.pixelSize: 18
                         }
@@ -579,17 +617,20 @@ Item {
                             width: drawerContent.width
                             height: 52
                             label: "OPEN MONITOR SETTINGS"
-                            onClicked: { root.drawerOpen = false; root.monitorRequested() }
+                            enabled: root.enabled && root.visible
+                            onClicked: {
+                                root.monitorRequested();
+                            }
                         }
                     }
                     Column {
                         width: parent.width
                         spacing: 10
-                        visible: root.drawerTab === "desktop"
+                        visible: root.pageTab === "desktop"
                         Text {
-                            text: "POWER PROFILE"
+                            text: root.listAvailable(root.model.power_profiles) ? "POWER PROFILE" : "POWER PROFILE  ·  UNAVAILABLE"
                             textFormat: Text.PlainText
-                            color: root.theme.accent
+                            color: root.listAvailable(root.model.power_profiles) ? root.theme.accent : root.theme.textMuted
                             font.family: "monospace"
                             font.pixelSize: 18
                         }
@@ -609,9 +650,9 @@ Item {
                             }
                         }
                         Text {
-                            text: "OMARCHY THEME"
+                            text: root.listAvailable(root.model.themes) ? "OMARCHY THEME" : "OMARCHY THEME  ·  UNAVAILABLE"
                             textFormat: Text.PlainText
-                            color: root.theme.accent
+                            color: root.listAvailable(root.model.themes) ? root.theme.accent : root.theme.textMuted
                             font.family: "monospace"
                             font.pixelSize: 18
                         }
@@ -633,6 +674,29 @@ Item {
                     }
                 }
             }
+                    Text {
+                        width: parent.width
+                        height: implicitHeight
+                        text: root.previewMode ? "PREVIEW  ·  desktop actions disabled" : root.feedback || String(root.model.detail || "Native desktop controls")
+                        textFormat: Text.PlainText
+                        color: root.previewMode ? root.theme.needsHelp : root.theme.textMuted
+                        font.pixelSize: 18
+                        wrapMode: Text.WordWrap
+                    }
         }
+    }
+    DashboardButton {
+        objectName: "desktopReviewOutcome"
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.margins: 18
+        width: Math.min(320, parent.width - 36)
+        height: 64
+        label: "REVIEWED · RESUME"
+        visible: root.unknownOutcome
+        enabled: root.canReviewOutcome
+        theme: root.theme
+        z: 60
+        onClicked: root.resumeReviewed()
     }
 }
