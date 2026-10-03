@@ -10,6 +10,26 @@ def source(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
+def portal_qml_paths():
+    """Every production QML file in the agent portal configuration.
+
+    quickshell/home/ is a separate, standalone Quickshell configuration with
+    its own action allowlist, its own process model, and its own contract
+    suite in quickshell/home/tests/. The contracts below govern the agent
+    portal only, so the home surface is excluded from the whole-tree sweeps;
+    it deliberately differs on process count and on permitted colour
+    literals, and it is checked by its own suite.
+    """
+    # Scope on the parts relative to the configuration root: an absolute
+    # path can carry a matching ancestor directory (a checkout living under
+    # a home directory, for instance) and silently exclude everything.
+    return sorted(
+        path
+        for path in ROOT.rglob("*.qml")
+        if not {"tests", "home"} & set(path.relative_to(ROOT).parts)
+    )
+
+
 class QmlSafetyContractTests(unittest.TestCase):
     def test_production_output_matching_is_fail_closed(self):
         shell = source("shell.qml")
@@ -63,9 +83,7 @@ class QmlSafetyContractTests(unittest.TestCase):
 
     def test_one_bridge_process_and_explicit_preview_window(self):
         qml = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in ROOT.rglob("*.qml")
-            if "tests" not in path.parts
+            path.read_text(encoding="utf-8") for path in portal_qml_paths()
         )
         self.assertEqual(len(re.findall(r"\bProcess\s*\{", qml)), 1)
         shell = source("shell.qml")
@@ -79,9 +97,7 @@ class QmlSafetyContractTests(unittest.TestCase):
         builder = source("state/CommandBuilder.qml")
         bridge = source("state/PortalBridge.qml")
         qml = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in ROOT.rglob("*.qml")
-            if "tests" not in path.parts
+            path.read_text(encoding="utf-8") for path in portal_qml_paths()
         )
 
         for action in (
@@ -180,9 +196,7 @@ class QmlSafetyContractTests(unittest.TestCase):
 
     def test_all_portal_text_is_explicitly_plain(self):
         qml_sources = [
-            path.read_text(encoding="utf-8")
-            for path in ROOT.rglob("*.qml")
-            if "tests" not in path.parts
+            path.read_text(encoding="utf-8") for path in portal_qml_paths()
         ]
         text_blocks = sum(
             len(re.findall(r"\bText\s*\{", contents))
@@ -417,9 +431,7 @@ class QmlSafetyContractTests(unittest.TestCase):
         card = source("components/AgentCard.qml")
         usage = source("components/AiUsageDock.qml")
         qml = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in ROOT.rglob("*.qml")
-            if "tests" not in path.parts
+            path.read_text(encoding="utf-8") for path in portal_qml_paths()
         )
 
         # The manager is daemon state: QML renders its wire value and sends
@@ -498,9 +510,7 @@ class QmlSafetyContractTests(unittest.TestCase):
                        encoding="utf-8"
                    )
         qml = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in ROOT.rglob("*.qml")
-            if "tests" not in path.parts
+            path.read_text(encoding="utf-8") for path in portal_qml_paths()
         )
 
         self.assertEqual(shell.count("Settings {"), 1)
@@ -577,9 +587,7 @@ class QmlSafetyContractTests(unittest.TestCase):
         portal = source("components/PortalView.qml")
         voice = source("components/VoiceControl.qml")
         qml_sources = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in ROOT.rglob("*.qml")
-            if "tests" not in path.parts
+            path.read_text(encoding="utf-8") for path in portal_qml_paths()
         )
 
         self.assertEqual(shell.count("OmarchyTheme {"), 1)
