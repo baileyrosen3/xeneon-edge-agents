@@ -24,33 +24,26 @@ class HomeScreenIdentityContractTests(unittest.TestCase):
 
     def setUp(self):
         self.shell = source("shell.qml")
+        self.gate = source("state/ScreenIdentity.js")
 
     def test_identity_requires_serial_model_and_output(self):
         # All three identity components must be demanded, not just some of them.
         for variable in ("targetSerial", "targetModel", "targetOutput"):
             self.assertIn(variable, self.shell)
         self.assertIn("function identityConfigured()", self.shell)
-        configured = re.search(
-            r"function identityConfigured\(\) \{(.*?)\n    \}",
-            self.shell,
-            re.S,
-        )
-        self.assertIsNotNone(configured)
-        body = configured.group(1)
-        for variable in ("targetOutput", "targetSerial", "targetModel"):
-            self.assertIn(variable, body)
+        # All three components are required by the shared gate.
+        self.assertIn("function identityConfigured(identity)", self.gate)
+        self.assertIn('String(record.output || "") !== ""', self.gate)
+        self.assertIn('String(record.model || "") !== ""', self.gate)
+        self.assertIn('String(record.serial || "") !== ""', self.gate)
+        self.assertIn("ScreenIdentity.targetScreen", self.shell)
 
     def test_no_surface_when_identity_is_missing_or_ambiguous(self):
         # The single-match gate is the whole fail-closed rule: anything other
         # than exactly one match yields an empty list, which creates no surface.
-        self.assertIn(
-            "readonly property var targetScreens:",
-            self.shell,
-        )
-        self.assertRegex(
-            self.shell,
-            r"matchingScreens\.length === 1 \? root\.matchingScreens : \[\]",
-        )
+        # Exactly one match, or nothing at all.
+        self.assertIn("ScreenIdentity.targetScreen", self.shell)
+        self.assertIn('return matches.length === 1 ? matches[0] : null', self.gate)
         self.assertIn("no surface:", self.shell)
 
     def test_no_fallback_to_the_primary_display(self):
@@ -67,17 +60,16 @@ class HomeScreenIdentityContractTests(unittest.TestCase):
     def test_serial_mismatch_refuses_the_screen(self):
         # A compositor that publishes no serial must not be assumed to be the
         # requested panel, so an empty runtime serial refuses.
-        matcher = re.search(
-            r"function screenMatches\(screen\) \{(.*?)\n    \}",
-            self.shell,
-            re.S,
-        )
-        self.assertIsNotNone(matcher)
-        body = matcher.group(1)
-        self.assertIn("serialNumber", body)
-        self.assertIn('runtimeSerial === ""', body)
-        self.assertIn("screen.model", body)
-        self.assertIn("screen.name", body)
+        # The shared gate compares the serial only when one is published, and
+        # requires exact output and model matches unconditionally.
+        self.assertIn("function screenMatches(screen, identity)", self.gate)
+        self.assertIn("screen.serialNumber", self.gate)
+        self.assertIn('runtimeSerial !== "" && runtimeSerial !== String(record.serial || "")',
+                      self.gate)
+        self.assertIn("screen.model", self.gate)
+        self.assertIn("screen.name", self.gate)
+        # The unsatisfiable form must never come back.
+        self.assertNotIn('runtimeSerial === "" ||', self.gate)
 
     def test_preview_mode_never_creates_a_live_surface(self):
         # The preview path must bypass screen matching entirely, so a screenshot

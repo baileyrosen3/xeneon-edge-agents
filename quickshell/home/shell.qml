@@ -3,6 +3,7 @@ import QtCore
 import Quickshell
 import "components"
 import "state"
+import "state/ScreenIdentity.js" as ScreenIdentity
 
 // A standalone Quickshell configuration for a home dashboard: a wide, short
 // strip that mirrors the desktop's own menu bar as system UI.
@@ -80,63 +81,46 @@ ShellRoot {
 
     readonly property var matchingScreens: screensMatchingIdentity()
 
-    readonly property var targetScreens:
-        root.matchingScreens.length === 1 ? root.matchingScreens : []
+    // Exactly one match or nothing. Several matches are as unusable as none.
+    readonly property var targetScreens: (function() {
+        var target = ScreenIdentity.targetScreen(
+            Quickshell.screens,
+            root.identity()
+        )
+        return target === null ? [] : [target]
+    })()
+
+    // The gate itself lives in ScreenIdentity.js so it can be executed and
+    // tested offline. An unsatisfiable gate in this file rendered perfectly in
+    // preview and could never bind live.
+    function identity() {
+        return {
+            "output": root.targetOutput,
+            "model": root.targetModel,
+            "serial": root.targetSerial
+        }
+    }
 
     function identityConfigured() {
-        return root.targetOutput !== ""
-            && root.targetSerial !== ""
-            && root.targetModel !== ""
+        return ScreenIdentity.identityConfigured(root.identity())
     }
 
     function screensMatchingIdentity() {
-        if (root.previewMode)
-            return []
-        if (!root.identityConfigured()) {
-            logIdentity(
-                "no surface: identity is incomplete; "
-                + "XENEON_HOME_SERIAL, XENEON_HOME_MODEL, and XENEON_HOME_OUTPUT are all required"
-            )
-            return []
-        }
-
-        var matches = []
-        var screens = Quickshell.screens
-        for (var index = 0; index < screens.length; index += 1) {
-            if (screenMatches(screens[index]))
-                matches.push(screens[index])
-        }
-
-        if (matches.length === 0) {
-            logIdentity(
-                "no surface: no screen matches output " + root.targetOutput
-                + " / model " + root.targetModel
-                + " / serial " + root.targetSerial
-            )
-        } else if (matches.length > 1) {
-            logIdentity("no surface: " + matches.length + " screens match the configured identity")
-        }
+        var matches = ScreenIdentity.matchingScreens(
+            Quickshell.screens,
+            root.identity()
+        )
+        var reason = ScreenIdentity.refusalReason(
+            Quickshell.screens,
+            root.identity()
+        )
+        if (reason !== "")
+            root.logIdentity("no surface: " + reason)
         return matches
     }
 
     function screenMatches(screen) {
-        if (screen === null || screen === undefined)
-            return false
-        if (String(screen.name || "") === ""
-                || Number(screen.width) <= 0
-                || Number(screen.height) <= 0)
-            return false
-
-        // A compositor that publishes no serial cannot be confirmed to be the
-        // requested panel, so it is refused rather than assumed.
-        var runtimeSerial = String(screen.serialNumber || "")
-        if (runtimeSerial === "" || runtimeSerial !== root.targetSerial)
-            return false
-        if (String(screen.model || "") !== root.targetModel)
-            return false
-        if (String(screen.name || "") !== root.targetOutput)
-            return false
-        return true
+        return ScreenIdentity.screenMatches(screen, root.identity())
     }
 
     function logIdentity(message) {
