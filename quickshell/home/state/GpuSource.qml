@@ -29,7 +29,10 @@ SourceBase {
     function probeList() {
         return [
             { "label": "cards", "argv": ["/usr/bin/ls", drmRoot] },
-            { "label": "hwmon", "argv": ["/usr/bin/sensors", "-j"] }
+            { "label": "hwmon", "argv": ["/usr/bin/sensors", "-j"] },
+            // The PCI id database is the only place on this class of machine
+            // where a real GPU marketing name exists; sysfs publishes ids only.
+            { "label": "pciids", "argv": ["/usr/bin/cat", "/usr/share/hwdata/pci.ids"] }
         ]
     }
 
@@ -82,7 +85,9 @@ SourceBase {
         var probes = []
         for (var index = 0; index < cards.length; index += 1) {
             var device = root.drmRoot + "/" + cards[index] + "/device"
-            probes.push({ "label": "device:" + cards[index], "argv": ["/usr/bin/ls", device] })
+            probes.push({ "label": "entries:" + cards[index], "argv": ["/usr/bin/ls", device] })
+            probes.push({ "label": "vendor:" + cards[index], "argv": ["/usr/bin/cat", device + "/vendor"] })
+            probes.push({ "label": "deviceid:" + cards[index], "argv": ["/usr/bin/cat", device + "/device"] })
             probes.push({ "label": "busy:" + cards[index], "argv": ["/usr/bin/cat", device + "/gpu_busy_percent"] })
             probes.push({ "label": "vram_used:" + cards[index], "argv": ["/usr/bin/cat", device + "/mem_info_vram_used"] })
             probes.push({ "label": "vram_total:" + cards[index], "argv": ["/usr/bin/cat", device + "/mem_info_vram_total"] })
@@ -98,7 +103,6 @@ SourceBase {
 
         var cards = root.cardDirectories(root.probeText(results, "cards"))
         var best = null
-        var driverModule = ""
         var cardName = ""
         for (var index = 0; index < cards.length; index += 1) {
             var card = cards[index]
@@ -113,7 +117,6 @@ SourceBase {
                 continue
             if (Parse.betterGpu(candidate, best)) {
                 best = candidate
-                driverModule = root.probeText(results, "device:" + card)
                 cardName = card
             }
         }
@@ -133,20 +136,39 @@ SourceBase {
             return
         }
 
-        // A GPU heading built only from what sysfs publishes. There is no
-        // marketing name to read here, so the driver module and the PCI device
-        // identity stand in; a card that publishes neither is labelled GPU.
+        // The heading prefers a real marketing name resolved from the pci.ids
+        // database, then the hwmon driver name, then the drm card name. It
+        // never invents one, and it never presents a raw card index while a
+        // resolvable identity exists.
         var heading = ""
-        if (chip !== "") {
-            heading = chip
-        } else if (best !== null) {
-            heading = best.card.toUpperCase()
+        var vendorName = ""
+        var modelName = ""
+        if (best !== null) {
+            var identity = Parse.parsePciIds(
+                root.probeSucceeded(results, "pciids")
+                    ? root.probeText(results, "pciids")
+                    : "",
+                root.probeText(results, "vendor:" + best.card),
+                root.probeText(results, "deviceid:" + best.card)
+            )
+            if (identity !== null) {
+                modelName = identity.short
+                vendorName = identity.vendorName
+                heading = modelName
+            }
         }
+
+        if (heading === "" && chip !== "")
+            heading = chip
+        if (heading === "" && best !== null)
+            heading = best.card.toUpperCase()
 
         root.publish({
             "card": best === null ? "" : best.card,
-            "driver": driverModule,
+            "driver": chip,
             "name": heading,
+            "vendor": vendorName,
+            "model": modelName,
             "chip": chip,
             "busyPercent": best === null ? null : best.busyPercent,
             "vramUsedBytes": best === null ? null : best.vramUsedBytes,

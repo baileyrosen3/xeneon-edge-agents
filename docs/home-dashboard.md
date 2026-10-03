@@ -102,6 +102,14 @@ fallback to the primary display, and no code path can reach one.
 | `XENEON_HOME_WALLPAPER=<path>` | Optional wallpaper backdrop. Unset by default; see below. |
 | `XENEON_HOME_THEME_ROOT` | Falls back to `$XDG_STATE_HOME/omarchy/current`. |
 
+### Stats presentation
+
+Each meter owns exactly one quantity and is laid out as one tight unit: heading,
+value, trailing line, then the meter directly beneath the value it belongs to.
+The bar is anchored inside the meter's own column rather than to the bottom of a
+stretched parent, so a reading and its bar can never drift apart. Video memory
+is its own meter rather than riding on another meter's trailing line.
+
 ## Layout
 
 A single horizontal band, with nothing legible or interactive within the outer
@@ -176,7 +184,7 @@ Availability below is measured on the authoring host.
 | `HyprlandSource` | `hyprctl -j monitors/workspaces/activewindow/clients` | working |
 | `CpuSource` | `/proc/stat`, `/proc/cpuinfo`, hwmon | working |
 | `MemorySource` | `/proc/meminfo` | working |
-| `GpuSource` | `/sys/class/drm/card*/device`, hwmon | working |
+| `GpuSource` | `/sys/class/drm/card*/device`, hwmon, `/usr/share/hwdata/pci.ids` | working |
 | `MediaSource` | Quickshell MPRIS service | **unavailable — no MPRIS player registered** |
 | `AudioSource` | `pactl` | working |
 | `NetworkSource` | `/proc/net/route`, `nmcli` | working |
@@ -191,10 +199,16 @@ Notes on two deliberate absences:
   installed on this host, and MPRIS is the protocol every desktop music player
   actually implements. With no player running, the card shows its honest
   unavailable state.
-- **GPU** reads sysfs only. NVIDIA's proprietary driver publishes nothing
-  readable there and would require NVML, i.e. a helper process per sample. A
-  host with no readable GPU path reports unavailable rather than inventing a
-  number.
+- **GPU** reads sysfs only, plus the system `pci.ids` database for the model's
+  real name. sysfs publishes PCI ids but no marketing name, so the name is
+  resolved from the same table a driver installer uses. NVIDIA's proprietary
+  driver publishes nothing readable there and would require NVML, i.e. a helper
+  process per sample; a host with no readable GPU path reports unavailable
+  rather than inventing a number.
+- **Device headings** name only what the machine actually publishes. The CPU
+  comes from `/proc/cpuinfo`, the GPU from `pci.ids`, and memory uses a neutral
+  label because SMBIOS publishes no module identity on this class of machine and
+  the installed capacity is already shown as the reading itself.
 
 ### About the wallpaper
 

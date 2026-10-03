@@ -112,14 +112,4 @@ Item {
         }
     }
 
-    // A single hairline under the status strip. It is a separation between two
-    // regions of one surface, not a decorative rule, and it is the only line
-    // drawn anywhere on this plane.
-    Rectangle {
-        anchors.left: parent.left
-        anchors.right: parent.right
-        y: Math.round(height * 0.19)
-        height: 1
-        color: Qt.alpha(String(root.theme.foreground), 0.06)
-    }
 }

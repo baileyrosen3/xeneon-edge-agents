@@ -401,6 +401,100 @@ class HomeLayoutContractTests(unittest.TestCase):
         self.assertIn("memoryTotalLabel", stats)
 
 
+class HomeStatsPresentationContractTests(unittest.TestCase):
+    """Each meter owns exactly one quantity, attached to its own reading."""
+
+    def test_meter_bar_is_attached_to_its_value_not_the_bottom(self):
+        # The meter is the last child of the meter's own column, so a reading and
+        # its bar cannot drift apart inside a stretched parent.
+        meter = source("components/StatMeter.qml")
+        self.assertIn("Column {", meter)
+        self.assertIn("id: column", meter)
+        self.assertIn("id: track", meter)
+        self.assertNotRegex(meter, r"anchors\.bottom: parent\.bottom\s*\n\s*height: 5")
+
+    def test_column_headings_are_distinct_from_meter_labels(self):
+        # A device name labels the column; the meters inside it label what they
+        # measure, so a heading never repeats the value beneath it.
+        stats = source("components/StatsStack.qml")
+        self.assertIn('heading: "Load"', stats)
+        self.assertIn('heading: "Package"', stats)
+        self.assertIn('heading: "Core"', stats)
+        self.assertIn('heading: "Video"', stats)
+        self.assertIn('heading: "In use"', stats)
+        self.assertIn('heading: "Swap"', stats)
+        # The load average is scoped to the load meter alone, with no stray word.
+        self.assertNotIn('"load " +', stats)
+
+    def test_gpu_name_comes_from_the_pci_id_database(self):
+        # sysfs publishes ids, not names; the database supplies the real name.
+        gpu = source("state/GpuSource.qml")
+        self.assertIn("pciids", gpu)
+        self.assertIn("/usr/share/hwdata/pci.ids", gpu)
+        self.assertIn("parsePciIds", gpu)
+        parse = source("state/SourceParse.js")
+        self.assertIn("function parsePciIds(raw, vendorId, deviceId)", parse)
+
+    def test_memory_heading_does_not_repeat_the_capacity(self):
+        stats = source("components/StatsStack.qml")
+        self.assertIn('readonly property string memoryLabel: "Memory"', stats)
+
+
+class HomeStatusPillContractTests(unittest.TestCase):
+    """A pill is self-describing or absent; it is never a bare dash."""
+
+    def test_pills_require_a_glyph_and_a_label(self):
+        for name in ("StatusPill.qml", "IndicatorPill.qml"):
+            text = source("components/" + name)
+            self.assertIn("hasContent", text)
+            self.assertIn("visible: hasContent", text)
+
+    def test_indicator_pills_render_a_visible_label(self):
+        pill = source("components/IndicatorPill.qml")
+        self.assertIn("text: root.label", pill)
+
+    def test_no_pill_renders_a_bare_dash_as_its_value(self):
+        # An absent reading is the pill's own unavailable state, not a dash typed
+        # into the value slot.
+        strip = source("components/StatusBarStrip.qml")
+        for fragment in ('"offline"', '"none"'):
+            self.assertIn(fragment, strip)
+        self.assertNotRegex(strip, r'value: "—"')
+
+
+class HomeIconContractTests(unittest.TestCase):
+    """Application icons resolve to real files, with a monogram as last resort."""
+
+    def test_resolver_lists_directories_rather_than_probing_files(self):
+        # A per-file probe depends on a miss being reported; a listing always
+        # arrives, so resolution terminates.
+        resolver = source("state/IconResolver.qml")
+        self.assertIn("searchPaths", resolver)
+        self.assertIn("/usr/bin/ls", resolver)
+        self.assertNotIn("FileView", resolver)
+
+    def test_icon_lookup_is_a_pure_read(self):
+        # A binding on this result must never trigger the write that would
+        # re-trigger it, so the function only reads.
+        resolver = source("state/IconResolver.qml")
+        body = re.search(
+            r"function pathFor\(iconName\) \{(.*?)\n    \}", resolver, re.S
+        )
+        self.assertIsNotNone(body)
+        # It may read the cache, but it must never assign to any root state.
+        for line in body.group(1).split("\n"):
+            stripped = line.strip()
+            self.assertNotIn("root.resolved =", stripped)
+            self.assertNotIn("root.themedPaths =", stripped)
+            self.assertNotIn("root.listings =", stripped)
+            self.assertNotIn("root.listNext(", stripped)
+
+    def test_dock_falls_back_to_a_monogram_only_without_a_file(self):
+        dock = source("components/DockIcon.qml")
+        self.assertIn("iconRendered", dock)
+        self.assertIn("visible: !root.iconRendered", dock)
+
+
 class HomeThemeContractTests(unittest.TestCase):
     """The palette is reused, never re-implemented, and is self-contained."""
 

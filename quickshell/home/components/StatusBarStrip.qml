@@ -46,13 +46,22 @@ Item {
         Math.round(height * Design.metrics.edgeSafeFraction)
     )
 
+    // A soft, bounded separation under the bar: a hairline that fades out
+    // toward both ends rather than a rule spanning the full width. It reads as
+    // the bar's own material edge, not as a divider drawn across the surface.
     Rectangle {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         height: 1
-        color: Qt.alpha(String(root.theme.border), 0.6)
-        opacity: 0.7
+        opacity: 0.55
+        gradient: Gradient {
+            orientation: Gradient.Horizontal
+            GradientStop { position: 0.0; color: "transparent" }
+            GradientStop { position: 0.18; color: Qt.alpha(String(root.theme.foreground), 0.10) }
+            GradientStop { position: 0.82; color: Qt.alpha(String(root.theme.foreground), 0.10) }
+            GradientStop { position: 1.0; color: "transparent" }
+        }
     }
 
     // Clock and date, left-aligned. The clock is the large title of the strip:
@@ -134,32 +143,29 @@ Item {
 
     // Status pills and the tray, right-aligned in one group so they read as a
     // single cluster rather than as scattered icons.
+    //
+    // Every pill shows a recognisable glyph AND a short text label, so nothing
+    // is ever a bare dash or a lone letter. A pill whose source has no state at
+    // all is hidden entirely rather than drawn empty.
     Row {
         id: pills
         anchors.right: parent.right
         anchors.rightMargin: root.edgeSafe
         anchors.verticalCenter: parent.verticalCenter
         anchors.verticalCenterOffset: -root.edgeSafe * 0.35
-        spacing: 7
+        spacing: 8
 
-        // Indicators first, because they are states the user toggles rather
-        // than measurements they read.
+        // Indicators first: these are states the user toggles.
         IndicatorPill {
             theme: root.theme
             dispatcher: root.dispatcher
             reducedMotion: root.reducedMotion
             height: root.pillHeight
             actionId: "toggle.notification_silencing"
-            glyph: root.indicators.dndAvailable && root.indicators.doNotDisturb ? "◐" : "○"
-            label: "Do not disturb"
-            state: !root.indicators.dndAvailable
-                ? "unavailable"
-                : root.indicators.doNotDisturb ? "active" : "idle"
-            detail: !root.indicators.dndAvailable
-                ? root.indicators.notificationsAvailable === false
-                    ? "notifications state is unreadable"
-                    : ""
-                : ""
+            glyph: "☾"
+            label: "Focus"
+            visible: root.indicators.dndAvailable
+            pillState: root.indicators.doNotDisturb ? "active" : "idle"
         }
 
         IndicatorPill {
@@ -168,14 +174,10 @@ Item {
             reducedMotion: root.reducedMotion
             height: root.pillHeight
             actionId: "toggle.idle"
-            glyph: root.indicators.stayAwake ? "☀" : "☾"
-            label: "Stay awake"
-            state: !root.indicators.snapshot.available
-                ? "unavailable"
-                : root.indicators.stayAwake ? "active" : "idle"
-            detail: !root.indicators.snapshot.available
-                ? root.indicators.snapshot.detail
-                : ""
+            glyph: "☀"
+            label: "Awake"
+            visible: root.indicators.snapshot.available
+            pillState: root.indicators.stayAwake ? "active" : "idle"
         }
 
         IndicatorPill {
@@ -185,32 +187,26 @@ Item {
             height: root.pillHeight
             actionId: "toggle.nightlight"
             glyph: "◐"
-            label: "Nightlight"
-            state: !root.indicators.snapshot.available
-                ? "unavailable"
-                : root.indicators.nightlight ? "active" : "idle"
-            detail: !root.indicators.snapshot.available
-                ? root.indicators.snapshot.detail
-                : root.indicators.nightlightDetail
+            label: "Night"
+            visible: root.indicators.snapshot.available
+            pillState: root.indicators.nightlight ? "active" : "idle"
         }
 
+        // Connectivity, with the interface named rather than a bare glyph.
         StatusPill {
             theme: root.theme
             reducedMotion: root.reducedMotion
             height: root.pillHeight
-            glyph: root.network.snapshot.available && root.network.connected ? "⌁" : "⌁"
-            label: "Network"
+            glyph: "⌁"
+            label: "Net"
             value: root.network.snapshot.available
                 ? (root.network.connection === ""
                     ? root.network.device
                     : root.network.connection)
-                : "—"
-            state: !root.network.snapshot.available
+                : "offline"
+            pillState: !root.network.snapshot.available
                 ? "unavailable"
                 : root.network.connected ? "active" : "idle"
-            detail: !root.network.snapshot.available
-                ? root.network.snapshot.detail
-                : root.network.connectedCount + " up"
         }
 
         VolumePill {
@@ -219,6 +215,7 @@ Item {
             reducedMotion: root.reducedMotion
             height: root.pillHeight
             audio: root.audio
+            visible: root.audio.snapshot.available
         }
 
         StatusPill {
@@ -226,35 +223,29 @@ Item {
             reducedMotion: root.reducedMotion
             height: root.pillHeight
             glyph: "ᛒ"
-            label: "Bluetooth"
+            label: "BT"
             value: root.bluetooth.snapshot.available && root.bluetooth.deviceCount > 0
-                ? String(root.bluetooth.deviceCount)
-                : "—"
-            state: !root.bluetooth.snapshot.available
+                ? String(root.bluetooth.deviceCount) + " paired"
+                : "none"
+            pillState: !root.bluetooth.snapshot.available
                 ? "unavailable"
                 : root.bluetooth.powered ? "active" : "idle"
-            detail: !root.bluetooth.snapshot.available
-                ? root.bluetooth.snapshot.detail
-                : root.bluetooth.deviceCount + " paired"
         }
 
         StatusPill {
             theme: root.theme
             reducedMotion: root.reducedMotion
             height: root.pillHeight
-            glyph: root.power.available
-                ? (root.power.charging ? "⚡" : root.batteryGlyph)
-                : "▭"
-            label: "Battery"
+            glyph: root.power.available ? (root.power.charging ? "⚡" : "▮") : "▯"
+            label: "Batt"
             value: root.power.available
                 ? String(root.power.percent) + "%"
-                : "—"
-            state: !root.power.available ? "unavailable" : "idle"
-            detail: !root.power.available ? root.power.snapshot.detail : "Battery"
+                : "none"
+            pillState: !root.power.available ? "unavailable" : "idle"
         }
 
-        // The desktop tray. Entries are activated by item id through the
-        // dispatcher's tray action family, never by calling an item directly.
+        // The desktop tray. Each well shows the item's icon or its app name,
+        // never a placeholder.
         TrayPill {
             theme: root.theme
             dispatcher: root.dispatcher

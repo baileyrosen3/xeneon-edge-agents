@@ -161,6 +161,73 @@ function parseHwmon(raw, wanted) {
     return fallback
 }
 
+// A PCI vendor/device pair resolved against the system pci.ids database, which
+// is the same table a package manager and a driver installer use. It is the only
+// place on this class of machine where a real GPU marketing name exists:
+// sysfs publishes the ids but not the name.
+//
+// pci.ids format: a vendor line, `vvvv  Vendor Name,`, then indented device
+// lines. Both are looked up by exact id. Returns null when either id is absent
+// or the database has no entry, so an unresolvable device is never given a
+// name it does not have.
+function parsePciIds(raw, vendorId, deviceId) {
+    // sysfs prints these as 0x1002; pci.ids is keyed by the bare 1002.
+    var vendor = String(vendorId === null || vendorId === undefined ? "" : vendorId)
+        .trim().replace(/^0x/i, "")
+    var device = String(deviceId === null || deviceId === undefined ? "" : deviceId)
+        .trim().replace(/^0x/i, "")
+    if (!/^[0-9a-fA-F]{4}$/.test(vendor) || !/^[0-9a-fA-F]{4}$/.test(device))
+        return null
+
+    var vendorPattern = new RegExp("^" + vendor.toLowerCase() + "\\s")
+    var devicePattern = new RegExp("^\\t" + device.toLowerCase() + "\\s")
+
+    var vendorName = ""
+    var inVendor = false
+    var lines = String(raw || "").split("\n")
+    for (var index = 0; index < lines.length; index += 1) {
+        var line = lines[index]
+        if (vendorPattern.test(line)) {
+            inVendor = true
+            vendorName = line.slice(5).split(",")[0].trim()
+            continue
+        }
+        // Any other top-level vendor or class line ends this vendor's block.
+        if (inVendor && /^[0-9A-Fa-f]{4}\s/.test(line))
+            break
+        if (inVendor && devicePattern.test(line)) {
+            var model = line.slice(5).trim()
+            return {
+                "vendorName": vendorName,
+                "model": model,
+                // The bracketed alternate is noise on a narrow column; the part
+                // before it is the name a user would recognise.
+                "short": shortPciModel(model)
+            }
+        }
+    }
+    return null
+}
+
+// A short, recognisable form of a pci.ids model line.
+function shortPciModel(model) {
+    var text = String(model === null || model === undefined ? "" : model)
+    var bracket = text.indexOf("[")
+    if (bracket > 0)
+        text = text.slice(0, bracket)
+    else {
+        var close = text.indexOf("]")
+        if (close > 0)
+            text = text.slice(0, close)
+    }
+    text = text.replace(/[\s\/]+$/, "").trim()
+    // Drop a bracketed lead-in that duplicates the tail, e.g. "Strix / 880M".
+    var parts = text.split(/\s+/)
+    if (parts.length > 4)
+        text = parts.slice(0, 4).join(" ")
+    return text
+}
+
 // The CPU marketing name, exactly as /proc/cpuinfo publishes it.
 function parseCpuModel(raw) {
     var match = String(raw || "").match(/^model name\s*:\s*(.+)$/m)
@@ -420,10 +487,20 @@ function parseNetworkDevices(raw, primaryDevice) {
     }
 }
 
-// `ip route show default`, reduced to the interface owning the default route.
+// The interface owning the default route, from /proc/net/route.
+//
+// This file has no "dev" keyword: each line is interface, destination, gateway,
+// and the default route is the row whose destination is 00000000.
 function parseDefaultRoute(raw) {
-    var match = String(raw || "").match(/\bdev\s+(\S+)/)
-    return match === null ? "" : match[1]
+    var lines = String(raw || "").split("\n")
+    for (var index = 0; index < lines.length; index += 1) {
+        var fields = lines[index].trim().split(/\s+/)
+        if (fields.length < 2 || fields[0].indexOf("Iface") === 0)
+            continue
+        if (String(fields[1]).toLowerCase() === "00000000")
+            return fields[0]
+    }
+    return ""
 }
 
 var byteUnits = ["B", "KB", "MB", "GB", "TB"]

@@ -51,14 +51,29 @@ Item {
                 anchors.top: parent.top
                 spacing: 9
 
+                // The device this column measures, named once.
+                Text {
+                    width: parent.width
+                    text: root.cpuLabel
+                    color: String(root.theme.textSecondary)
+                    font.family: Design.fontFamily
+                    font.pixelSize: Design.type.subheadline.size
+                    font.weight: Design.type.subheadline.weight
+                    font.letterSpacing: Design.type.subheadline.tracking
+                    elide: Text.ElideRight
+                }
+
                 StatMeter {
                     width: parent.width
                     theme: root.theme
                     reducedMotion: root.reducedMotion
                     kind: "load"
-                    heading: root.cpuLabel
+                    heading: "Load"
                     percent: root.cpu.loadPercent
-                    detail: root.cpuDetail
+                    // The load average is this meter's own subline. It is only
+                    // shown once a real delta exists, so a first sample shows
+                    // its real reason instead of a placeholder.
+                    capacityDetail: root.cpuLoadAverageLabel
                 }
 
                 StatMeter {
@@ -68,7 +83,6 @@ Item {
                     kind: "temperature"
                     heading: "Package"
                     celsius: root.cpu.celsius
-                    detail: root.cpu.available ? root.cpu.loadAverage : root.cpu.snapshot.detail
                 }
             }
         }
@@ -85,14 +99,24 @@ Item {
                 anchors.top: parent.top
                 spacing: 9
 
+                Text {
+                    width: parent.width
+                    text: root.gpuLabel
+                    color: String(root.theme.textSecondary)
+                    font.family: Design.fontFamily
+                    font.pixelSize: Design.type.subheadline.size
+                    font.weight: Design.type.subheadline.weight
+                    font.letterSpacing: Design.type.subheadline.tracking
+                    elide: Text.ElideRight
+                }
+
                 StatMeter {
                     width: parent.width
                     theme: root.theme
                     reducedMotion: root.reducedMotion
                     kind: "load"
-                    heading: root.gpuLabel
+                    heading: "Load"
                     percent: root.gpu.busyPercent
-                    detail: root.gpuDetail
                 }
 
                 StatMeter {
@@ -102,7 +126,17 @@ Item {
                     kind: "temperature"
                     heading: "Core"
                     celsius: root.gpu.celsius
-                    detail: root.gpuDetail
+                }
+
+                StatMeter {
+                    width: parent.width
+                    theme: root.theme
+                    reducedMotion: root.reducedMotion
+                    kind: "capacity"
+                    heading: "Video"
+                    percent: root.gpuVramPercent
+                    capacityLabel: root.gpuVramUsedLabel
+                    capacityDetail: root.gpuVramTotalLabel
                 }
             }
         }
@@ -119,16 +153,26 @@ Item {
                 anchors.top: parent.top
                 spacing: 9
 
+                Text {
+                    width: parent.width
+                    text: root.memoryLabel
+                    color: String(root.theme.textSecondary)
+                    font.family: Design.fontFamily
+                    font.pixelSize: Design.type.subheadline.size
+                    font.weight: Design.type.subheadline.weight
+                    font.letterSpacing: Design.type.subheadline.tracking
+                    elide: Text.ElideRight
+                }
+
                 StatMeter {
                     width: parent.width
                     theme: root.theme
                     reducedMotion: root.reducedMotion
                     kind: "capacity"
-                    heading: root.memoryLabel
+                    heading: "In use"
                     percent: root.memory.percent
                     capacityLabel: root.memoryUsedLabel
                     capacityDetail: root.memoryTotalLabel
-                    detail: root.memory.snapshot.detail
                 }
 
                 StatMeter {
@@ -140,10 +184,6 @@ Item {
                     percent: root.swapPercent
                     capacityLabel: root.swapUsedLabel
                     capacityDetail: root.swapTotalLabel
-                    detail: root.memory.snapshot.available
-                        && root.memory.snapshot.swapTotalBytes > 0
-                        ? ""
-                        : root.memory.snapshot.detail
                 }
             }
         }
@@ -166,11 +206,10 @@ Item {
                 ? root.gpu.card
                 : "GPU"
 
-    // The memory heading carries the installed capacity, which is the number a
-    // user actually recognises.
-    readonly property string memoryLabel: root.memory.available && root.memory.totalBytes > 0
-        ? Parse.formatBytes(root.memory.totalBytes)
-        : "Memory"
+    // D3: the memory heading must not repeat the capacity it sits above. The
+    // installed capacity is already the value of the "In use" meter, so the
+    // heading stays a neutral, honest label.
+    readonly property string memoryLabel: "Memory"
 
     // The capacity reading. An unavailable memory source shows an em dash rather
     // than a fabricated total.
@@ -194,11 +233,27 @@ Item {
         ? "of " + Parse.formatBytes(root.memory.snapshot.swapTotalBytes)
         : "unavailable"
 
-    readonly property string cpuDetail: root.cpu.available
-        ? "load " + root.cpu.loadAverage
-        : root.cpu.snapshot.detail
+    // The load average belongs to the load meter alone, formatted as
+    // "1m 1.68". It appears only once a real delta exists, because before that
+    // there is genuinely nothing to say.
+    readonly property string cpuLoadAverageLabel: root.cpu.loadPercent >= 0
+        && root.cpu.loadAverage !== ""
+        ? "1m " + root.cpu.loadAverage.split(/\s+/)[0]
+        : ""
 
-    readonly property string gpuDetail: root.gpu.snapshot.available === true && root.gpu.hasVram
-        ? root.gpu.vramLabel
-        : root.gpu.snapshot.detail
+    // Video memory gets its own meter rather than riding on the load meter's
+    // subline, so every meter owns exactly one quantity.
+    readonly property bool hasVram: root.gpu.hasVram
+
+    readonly property real gpuVramPercent: root.gpu.hasVram
+        ? Math.max(0, Math.min(100, root.gpu.vramUsedBytes * 100 / root.gpu.vramTotalBytes))
+        : -1
+
+    readonly property string gpuVramUsedLabel: root.gpu.hasVram
+        ? Parse.formatBytes(root.gpu.vramUsedBytes)
+        : "—"
+
+    readonly property string gpuVramTotalLabel: root.gpu.hasVram
+        ? "of " + Parse.formatBytes(root.gpu.vramTotalBytes)
+        : "unavailable"
 }

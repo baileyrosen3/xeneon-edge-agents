@@ -220,13 +220,17 @@ QtObject {
             return false
         if (/[\n\r;|&`$><*?()\[\]{}!\\"']/.test(value))
             return false
-        if (/^-[A-Za-z0-9]{1,16}$/.test(value))
+        // A short or long flag: -j, --status, --shell. Dashes, letters and
+        // digits only.
+        if (/^-{1,2}[A-Za-z0-9-]{0,15}$/.test(value))
             return true
         if (value.charAt(0) === "/")
             return true
         // A bare word. No slashes, so it can never be a path, and nothing a
-        // shell would treat specially.
-        return /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(value)
+        // shell would treat specially. A leading `@` is permitted because
+        // PulseAudio sink tokens are spelled `@DEFAULT_SINK@`, which is a
+        // literal the table supplies, never anything a caller supplies.
+        return /^[@A-Za-z0-9][A-Za-z0-9._@%-]{0,31}$/.test(value)
     }
 
     // Keeps only follow-up probes that read a validated /proc or /sys path.

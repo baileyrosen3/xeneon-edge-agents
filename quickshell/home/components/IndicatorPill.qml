@@ -34,10 +34,10 @@ Item {
             ? String(root.theme.canvas)
             : String(root.theme.textSecondary)
 
-    readonly property bool hasContent: root.glyph !== ""
+    readonly property bool hasContent: root.glyph !== "" && root.label !== ""
 
     implicitHeight: height
-    implicitWidth: hasContent ? 34 : 0
+    implicitWidth: hasContent ? row.implicitWidth + 16 : 0
     height: hasContent ? 32 : 0
     visible: hasContent
 
@@ -76,12 +76,28 @@ Item {
         pressed: press.pressed ? 1 : 0
     }
 
-    Text {
+    Row {
+        id: row
         anchors.centerIn: parent
-        text: root.glyph
-        color: root.glyphColor
-        font.family: Design.fontFamily
-        font.pixelSize: Design.type.body.size
-        font.weight: 600
+        spacing: 5
+
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.glyph
+            color: root.glyphColor
+            font.family: Design.fontFamily
+            font.pixelSize: Design.type.subheadline.size + 1
+            font.weight: 600
+        }
+
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            text: root.label
+            color: root.glyphColor
+            font.family: Design.fontFamily
+            font.pixelSize: Design.type.subheadline.size
+            font.weight: 600
+            font.letterSpacing: 0.2
+        }
     }
 }
