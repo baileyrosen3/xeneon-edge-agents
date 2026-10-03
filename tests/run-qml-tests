@@ -21,6 +21,9 @@ find quickshell -name '*.qml' -type f -print0 |
 PYTHONDONTWRITEBYTECODE=1 \
   python -m unittest discover -s quickshell/tests -p 'test_*.py' -v
 
+PYTHONDONTWRITEBYTECODE=1 \
+  python -m unittest discover -s quickshell/home/tests -p 'test_*.py' -v
+
 qml_test_runner=${QMLTESTRUNNER:-/usr/lib/qt6/bin/qmltestrunner}
 if [[ ! -x "$qml_test_runner" ]]; then
   qml_test_runner=$(command -v qmltestrunner || true)
