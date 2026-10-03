@@ -26,6 +26,12 @@ Item {
     required property var power
     required property var tray
     required property var indicators
+    required property var keyboard
+    required property var storage
+    required property var updates
+    required property var agentsUsage
+    required property var clipboard
+    required property var notifications
 
     property bool reducedMotion: false
     property bool showDate: true
@@ -196,6 +202,107 @@ Item {
         elide: Text.ElideLeft
     }
 
+    // Wireless strength as a bar count, derived from the measured signal. Four
+    // bars is the strongest reading; -1 (no measurement) renders no bars.
+    readonly property string signalGlyph: root.network.signalBars <= 0
+        ? "⌁"
+        : root.network.signalBars >= 4
+            ? "▮"
+            : root.network.signalBars === 3
+                ? "▮▯"
+                : root.network.signalBars === 2
+                    ? "▯▯"
+                    : "▯"
+
+    // Every candidate pill, in the order they should be considered. `cost` is a
+    // rough width in logical pixels, used only to decide whether a pill still
+    // fits; it never affects what a pill renders.
+    readonly property var pillCandidates: [
+        { "id": "notifications", "cost": 96, "priority": 1 },
+        { "id": "dnd", "cost": 84, "priority": 2 },
+        { "id": "stayAwake", "cost": 92, "priority": 3 },
+        { "id": "update", "cost": 78, "priority": 4 },
+        { "id": "network", "cost": 168, "priority": 5 },
+        { "id": "volume", "cost": 116, "priority": 6 },
+        { "id": "bluetooth", "cost": 104, "priority": 7 },
+        { "id": "battery", "cost": 84, "priority": 8 },
+        { "id": "reminders", "cost": 84, "priority": 9 },
+        { "id": "agents", "cost": 104, "priority": 10 },
+        { "id": "clipboard", "cost": 84, "priority": 11 },
+        { "id": "storage", "cost": 120, "priority": 12 },
+        { "id": "keyboard", "cost": 84, "priority": 13 },
+        { "id": "nightlight", "cost": 88, "priority": 14 }
+    ]
+
+    // How many pills survive at this width. Pills are dropped from the lowest
+    // priority upward; a pill that has nothing to say never takes a slot at all.
+    readonly property int pillBudget: Math.max(3, Math.round(regionWidth * 0.50 / 92))
+    readonly property var shownPills: selectPills()
+
+    function hasSomethingToSay(id) {
+        if (id === "notifications")
+            return notifications.pending
+        if (id === "dnd")
+            return indicators.dndAvailable
+        if (id === "stayAwake")
+            return indicators.snapshot.available
+        if (id === "nightlight")
+            return indicators.snapshot.available
+        if (id === "update")
+            return updates.available && updates.updatePending
+        if (id === "network")
+            return network.snapshot.available
+        if (id === "volume")
+            return audio.snapshot.available
+        if (id === "bluetooth")
+            return bluetooth.snapshot.available
+        if (id === "battery")
+            return power.available
+        if (id === "clipboard")
+            return clipboard.available
+        if (id === "storage")
+            return storage.available
+        if (id === "keyboard")
+            return keyboard.available && keyboard.multipleLayouts
+        if (id === "agents")
+            return agentsUsage.available
+        if (id === "reminders")
+            return notifications.available && notifications.reminderCount > 0
+        return false
+    }
+
+    function selectPills() {
+        var wanted = []
+        for (var index = 0; index < root.pillCandidates.length; index += 1) {
+            var candidate = root.pillCandidates[index]
+            if (root.hasSomethingToSay(candidate.id))
+                wanted.push(candidate)
+        }
+        wanted.sort(function(left, right) {
+            return left.priority - right.priority
+        })
+        // One tray well is always allowed for, so a running background app is
+        // never the thing that gets dropped.
+        var allowed = root.pillBudget
+        return wanted.slice(0, allowed)
+    }
+
+    // The device name is never built into a command here: it is handed to the
+    // typed dispatch entry, which validates it against the last device read.
+    function cycleKeyboard() {
+        if (root.keyboard.deviceName === "")
+            return
+        root.dispatcher.dispatch("keyboard.cycle", root.keyboard.deviceName)
+    }
+
+    function pillShown(id) {
+        for (var index = 0; index < root.shownPills.length; index += 1) {
+            if (root.shownPills[index].id === id)
+                return true
+        }
+        return false
+    }
+
     Row {
         id: pills
         anchors.right: parent.right
@@ -205,7 +312,34 @@ Item {
         spacing: 8
         // Caps the group at its budget so it can never grow into the clock.
 
-        // Indicators first: these are states the user toggles.
+        // Each pill is visible only when it has something to say AND it survived
+        // the priority budget. Order is by priority, not by source order, so the
+        // strip stays calm when everything is available at once.
+
+        // Pending work: notifications first, because it is the only thing on
+        // this strip that is waiting for the user.
+        StatusPill {
+            theme: root.theme
+            reducedMotion: root.reducedMotion
+            height: root.pillHeight
+            visible: root.pillShown("notifications")
+            glyph: "◈"
+            label: "Notify"
+            value: root.notifications.notificationCount + ""
+            pillState: "active"
+        }
+
+        StatusPill {
+            theme: root.theme
+            reducedMotion: root.reducedMotion
+            height: root.pillHeight
+            visible: root.pillShown("reminders")
+            glyph: "✓"
+            label: "Tasks"
+            value: root.notifications.reminderCount + ""
+            pillState: "active"
+        }
+
         IndicatorPill {
             theme: root.theme
             dispatcher: root.dispatcher
@@ -214,7 +348,7 @@ Item {
             actionId: "toggle.notification_silencing"
             glyph: "☾"
             label: "Focus"
-            visible: root.indicators.dndAvailable
+            visible: root.pillShown("dnd")
             pillState: root.indicators.doNotDisturb ? "active" : "idle"
         }
 
@@ -226,7 +360,7 @@ Item {
             actionId: "toggle.idle"
             glyph: "☀"
             label: "Awake"
-            visible: root.indicators.snapshot.available
+            visible: root.pillShown("stayAwake")
             pillState: root.indicators.stayAwake ? "active" : "idle"
         }
 
@@ -238,25 +372,36 @@ Item {
             actionId: "toggle.nightlight"
             glyph: "◐"
             label: "Night"
-            visible: root.indicators.snapshot.available
+            visible: root.pillShown("nightlight")
             pillState: root.indicators.nightlight ? "active" : "idle"
         }
 
-        // Connectivity, with the interface named rather than a bare glyph.
+        // One bit: this pill exists only while an update is waiting.
         StatusPill {
             theme: root.theme
             reducedMotion: root.reducedMotion
             height: root.pillHeight
-            glyph: "⌁"
-            label: "Net"
+            visible: root.pillShown("update")
+            glyph: "↑"
+            label: "Update"
+            value: "ready"
+            pillState: "active"
+        }
+
+        // Connectivity, with the real connection name and a wired/wireless mark.
+        StatusPill {
+            theme: root.theme
+            reducedMotion: root.reducedMotion
+            height: root.pillHeight
+            visible: root.pillShown("network")
+            glyph: root.network.wireless ? root.signalGlyph : "⌁"
+            label: root.network.wireless ? "WiFi" : "Net"
             value: root.network.snapshot.available
                 ? (root.network.connection === ""
                     ? root.network.device
                     : root.network.connection)
                 : "offline"
-            pillState: !root.network.snapshot.available
-                ? "unavailable"
-                : root.network.connected ? "active" : "idle"
+            pillState: root.network.snapshot.available ? "active" : "unavailable"
         }
 
         VolumePill {
@@ -265,13 +410,14 @@ Item {
             reducedMotion: root.reducedMotion
             height: root.pillHeight
             audio: root.audio
-            visible: root.audio.snapshot.available
+            visible: root.pillShown("volume")
         }
 
         StatusPill {
             theme: root.theme
             reducedMotion: root.reducedMotion
             height: root.pillHeight
+            visible: root.pillShown("bluetooth")
             glyph: "ᛒ"
             label: "BT"
             value: root.bluetooth.snapshot.available && root.bluetooth.deviceCount > 0
@@ -286,16 +432,72 @@ Item {
             theme: root.theme
             reducedMotion: root.reducedMotion
             height: root.pillHeight
+            visible: root.pillShown("battery")
             glyph: root.power.available ? (root.power.charging ? "⚡" : "▮") : "▯"
             label: "Batt"
-            value: root.power.available
-                ? String(root.power.percent) + "%"
-                : "none"
+            value: root.power.available ? String(root.power.percent) + "%" : "none"
             pillState: !root.power.available ? "unavailable" : "idle"
         }
 
-        // The desktop tray. Each well shows the item's icon or its app name,
-        // never a placeholder.
+        // Clipboard presence and count only. No content, ever.
+        StatusPill {
+            theme: root.theme
+            reducedMotion: root.reducedMotion
+            height: root.pillHeight
+            visible: root.pillShown("clipboard")
+            glyph: "⎘"
+            label: "Clip"
+            value: root.clipboard.count >= 0 ? String(root.clipboard.count) : "—"
+            pillState: root.clipboard.available ? "idle" : "unavailable"
+        }
+
+        // Aggregate agent activity. Counts only.
+        StatusPill {
+            theme: root.theme
+            reducedMotion: root.reducedMotion
+            height: root.pillHeight
+            visible: root.pillShown("agents")
+            glyph: "◍"
+            label: "Agents"
+            value: root.agentsUsage.totalPrompts >= 0
+                ? String(root.agentsUsage.totalPrompts)
+                : "—"
+            pillState: root.agentsUsage.available ? "idle" : "unavailable"
+        }
+
+        // Disk capacity, with the severity derived from the measured percent.
+        StatusPill {
+            theme: root.theme
+            reducedMotion: root.reducedMotion
+            height: root.pillHeight
+            visible: root.pillShown("storage")
+            glyph: "▤"
+            label: "Disk"
+            value: root.storage.percent >= 0
+                ? root.storage.primaryLabel + " " + Math.round(root.storage.percent) + "%"
+                : "—"
+            pillState: !root.storage.available
+                ? "unavailable"
+                : root.storage.severity === "crit" || root.storage.severity === "warn"
+                    ? "active"
+                    : "idle"
+        }
+
+        // Keyboard layout, only when the device actually offers more than one.
+        StatusPill {
+            theme: root.theme
+            reducedMotion: root.reducedMotion
+            height: root.pillHeight
+            visible: root.pillShown("keyboard")
+            glyph: "⌨"
+            label: root.keyboard.layoutLabel === "" ? "KB" : root.keyboard.layoutLabel
+            value: ""
+            pillState: "idle"
+            tappable: true
+            onClicked: root.cycleKeyboard()
+        }
+
+        // The desktop tray, always allowed for.
         TrayPill {
             theme: root.theme
             dispatcher: root.dispatcher

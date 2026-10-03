@@ -68,6 +68,12 @@ PanelWindow {
         power: root.context.power
         tray: root.context.tray
         indicators: root.context.indicators
+        keyboard: root.context.keyboard
+        storage: root.context.storage
+        updates: root.context.updates
+        agentsUsage: root.context.agentsUsage
+        clipboard: root.context.clipboard
+        notifications: root.context.notifications
         reducedMotion: root.reducedMotion
     }
 }

@@ -23,11 +23,20 @@ STATE = HOME / "state"
 
 
 def node_available() -> bool:
-    return subprocess.run(
-        ["node", "--version"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    ).returncode == 0
+    """Whether node can actually be executed.
+
+    This is evaluated when the skip decorators are applied, at import time, so a
+    missing binary has to return False rather than raise: an exception here
+    escapes module import and the whole file errors instead of skipping.
+    """
+    try:
+        return subprocess.run(
+            ["node", "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def run_js(script: str):

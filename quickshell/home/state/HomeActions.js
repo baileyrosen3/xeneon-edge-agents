@@ -119,6 +119,14 @@ var actions = {
         "checked": true
     },
 
+    "keyboard.cycle": {
+        "kind": "desktop",
+        "label": "Cycle keyboard layout",
+        "command": ["/usr/bin/hyprctl", "switchxkblayout", "device", "next"],
+        "parameter": "device",
+        "checked": true
+    },
+
     "toggle.idle": {
         "kind": "desktop",
         "label": "Stay awake",
@@ -298,6 +306,13 @@ function plan(actionId, parameter, context) {
         if (workspace === null)
             return { "error": "Workspace id is out of range" }
         argv[argv.length - 1] = workspace
+    } else if (parameterKind === "device") {
+        // A keyboard device name is free text from hyprctl, so it is only ever
+        // accepted when it appears in the most recent device read.
+        var known = context.devices || []
+        if (known.indexOf(String(parameter)) === -1)
+            return { "error": "Keyboard device is not in the current snapshot" }
+        argv[2] = String(parameter)
     } else if (parameterKind === "window") {
         var address = validAddress(parameter)
         if (address === null)

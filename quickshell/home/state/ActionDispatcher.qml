@@ -21,6 +21,7 @@ QtObject {
     property var hyprland: null
     property var media: null
     property var tray: null
+    property var keyboard: null
 
     readonly property var allowlist: Allowlist.actions
     readonly property var actionIds: Allowlist.actionIds
@@ -111,7 +112,12 @@ QtObject {
                 : [],
             "lengthSeconds": root.media && root.media.available
                 ? root.media.lengthSeconds
-                : -1
+                : -1,
+            // Device names come from hyprctl, never from QML. A cycle for a
+            // device that was not in the last read is refused.
+            "devices": root.keyboard && root.keyboard.available
+                ? root.keyboard.deviceNames
+                : []
         }
     }
 
