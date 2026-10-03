@@ -34,6 +34,12 @@ Item {
     required property var power
     required property var tray
     required property var indicators
+    required property var keyboard
+    required property var storage
+    required property var updates
+    required property var agentsUsage
+    required property var clipboard
+    required property var notifications
 
     property bool reducedMotion: false
 
@@ -72,6 +78,12 @@ Item {
         power: root.power
         tray: root.tray
         indicators: root.indicators
+        keyboard: root.keyboard
+        storage: root.storage
+        updates: root.updates
+        agentsUsage: root.agentsUsage
+        clipboard: root.clipboard
+        notifications: root.notifications
 
         reducedMotion: root.reducedMotion
         showDate: root.settings.showDate

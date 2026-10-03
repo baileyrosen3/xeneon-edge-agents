@@ -173,6 +173,30 @@ ShellRoot {
             id: icons
         }
 
+        KeyboardSource {
+            id: keyboard
+        }
+
+        StorageSource {
+            id: storage
+        }
+
+        UpdateSource {
+            id: updates
+        }
+
+        AgentUsageSource {
+            id: agentsUsage
+        }
+
+        ClipboardSource {
+            id: clipboard
+        }
+
+        NotificationSource {
+            id: notifications
+        }
+
         ClockSource {
             id: clock
         }
@@ -298,6 +322,12 @@ ShellRoot {
             power: power
             tray: tray
             indicators: indicators
+            keyboard: keyboard
+            storage: storage
+            updates: updates
+            agentsUsage: agentsUsage
+            clipboard: clipboard
+            notifications: notifications
             reducedMotion: root.reducedMotion
         }
 
@@ -307,7 +337,7 @@ ShellRoot {
             id: shotDelay
 
             running: root.captureMode
-            interval: 2600
+            interval: 4200
             repeat: false
             onTriggered: root.captureShot()
         }
@@ -335,7 +365,13 @@ ShellRoot {
             "bluetooth": bluetooth,
             "power": power,
             "tray": tray,
-            "indicators": indicators
+            "indicators": indicators,
+            "keyboard": keyboard,
+            "storage": storage,
+            "updates": updates,
+            "agentsUsage": agentsUsage,
+            "clipboard": clipboard,
+            "notifications": notifications
         }
     }
 

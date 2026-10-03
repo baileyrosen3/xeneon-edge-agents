@@ -20,6 +20,11 @@ Item {
     property string value: "—"
     property string detail: ""
 
+    // An optional tap. Used where the pill carries a typed action rather than a
+    // reading, as the keyboard layout pill does.
+    property bool tappable: false
+    signal clicked()
+
     // "active" | "idle" | "unavailable"
     property string pillState: "idle"
 

@@ -228,6 +228,178 @@ function shortPciModel(model) {
     return text
 }
 
+// Keyboards from `hyprctl -j devices`. Only the fields this surface needs are
+// kept: the device name, the human keymap label, the layout code, and how many
+// layouts the device actually offers.
+function parseKeyboards(raw) {
+    var entry = parseJsonObject(raw)
+    if (entry === null)
+        return null
+    var keyboards = entry.keyboards
+    if (!Array.isArray(keyboards))
+        return null
+
+    var parsed = []
+    for (var index = 0; index < keyboards.length; index += 1) {
+        var device = keyboards[index]
+        if (device === null || device === undefined)
+            continue
+        var layouts = []
+        var declared = device.layouts
+        if (Array.isArray(declared))
+            layouts = declared
+        var active = String(device.active_keymap === undefined ? "" : device.active_keymap)
+        if (active !== "" && layouts.indexOf(active) === -1)
+            layouts.push(active)
+        parsed.push({
+            "name": String(device.name || ""),
+            "activeKeymap": active,
+            "layout": String(device.layout || ""),
+            "variant": String(device.variant || ""),
+            "layoutCount": layouts.length,
+            // Hyprland reports Bluetooth and power-button pseudo-devices
+            // alongside real keyboards; they must not become the active one.
+            "virtual": /^(video-bus|power-button|bluez-|libvirtualhid)/i.test(
+                String(device.name || "")
+            )
+        })
+    }
+    return parsed
+}
+
+// A disk usage row from `df -P`. Capacity is kept as a number so the severity
+// ramp can be applied from the measurement rather than from a printed string.
+function parseDf(raw) {
+    var lines = String(raw || "").split("\n")
+    var volumes = []
+    var seen = {}
+    for (var index = 1; index < lines.length; index += 1) {
+        var fields = lines[index].trim().split(/\s+/)
+        if (fields.length < 6)
+            continue
+        var mount = fields[fields.length - 1]
+        var percent = finiteNumber(String(fields[fields.length - 2]).replace(/%$/, ""))
+        if (percent === null)
+            continue
+        var volume = {
+            "mount": mount,
+            "device": fields[0],
+            "totalBytes": Number(fields[1]) * 1024,
+            "usedBytes": Number(fields[2]) * 1024,
+            "availableBytes": Number(fields[3]) * 1024,
+            "percent": percent
+        }
+        var existing = seen[fields[0]]
+        // One filesystem, one row: the shortest mount point is the volume the
+        // user thinks of as "the disk".
+        if (existing === undefined || mount.length < existing.mount.length)
+            seen[fields[0]] = volume
+    }
+    for (var name in seen) {
+        if (Object.prototype.hasOwnProperty.call(seen, name))
+            volumes.push(seen[name])
+    }
+    volumes.sort(function(left, right) {
+        return right.percent - left.percent
+    })
+    return volumes
+}
+
+// The severity ramp the storage widget already defines: ok below 75, warn from
+// 75, crit from 90. Derived from the measured percentage, never printed.
+function diskSeverity(percent) {
+    var number = finiteNumber(percent)
+    if (number === null)
+        return "unknown"
+    if (number >= 90)
+        return "crit"
+    if (number >= 75)
+        return "warn"
+    return "ok"
+}
+
+// Tab-separated `omarchy-network-status --verbose` rows. Only the fields this
+// surface renders are kept; throughput and address details stay out.
+function parseNetworkStatus(raw) {
+    var rows = String(raw || "").split("\n")
+    var values = ({})
+    for (var index = 0; index < rows.length; index += 1) {
+        var fields = rows[index].trim().split("\t")
+        if (fields.length >= 2)
+            values[fields[0]] = fields.slice(1).join("\t")
+    }
+    if (Object.keys(values).length === 0)
+        return null
+    return values
+}
+
+// `nmcli -t -f IN-USE,SSID,SIGNAL device wifi list`. Returns only the connected
+// network's identity and strength; the list of visible networks is never kept.
+function parseWifiActive(raw) {
+    var lines = String(raw || "").split("\n")
+    for (var index = 0; index < lines.length; index += 1) {
+        var fields = lines[index].trim().split(":")
+        if (fields.length < 3)
+            continue
+        if (fields[0] !== "*")
+            continue
+        var signal = finiteNumber(fields[2])
+        return {
+            "ssid": fields[1],
+            "signal": signal === null ? null : Math.max(0, Math.min(100, signal))
+        }
+    }
+    return null
+}
+
+// A clipboard's metadata only. The caller passes values that jq has already
+// reduced to a count and a length, so no clipboard content can reach this
+// function, let alone the surface.
+function parseClipboardMeta(countText, lengthText) {
+    var count = finiteNumber(String(countText || "").trim())
+    if (count === null)
+        return null
+    var length = finiteNumber(String(lengthText || "").trim())
+    return {
+        "count": Math.max(0, Math.round(count)),
+        "newestLength": length === null ? null : Math.max(0, Math.round(length))
+    }
+}
+
+// `omarchy reminder show --json`. Only the aggregate count and active flag are
+// kept; a reminder's text is never read into the surface.
+function parseReminders(raw) {
+    var entry = parseJsonObject(raw)
+    if (entry === null)
+        return null
+    var count = finiteNumber(entry.count)
+    if (count === null)
+        return null
+    return { "count": Math.max(0, Math.round(count)), "active": entry.active === true }
+}
+
+// One aggregate utilisation number per agent, from the usage records. Only the
+// scalar counters are read: no prompt text, no message bodies, no provider
+// payloads, and nothing at all from T3 Code checkpoints or secrets.
+function parseAgentUsage(raw) {
+    var entry = parseJsonObject(raw)
+    if (entry === null)
+        return null
+    var prompts = finiteNumber(entry.todayPrompts)
+    var sessions = finiteNumber(entry.todaySessions)
+    if (prompts === null && sessions === null)
+        return null
+    // Prompts and sessions are the two aggregates a reader recognises. Token
+    // counts are deliberately not summed with them: mixing units would produce
+    // a number that means nothing.
+    return {
+        "name": String(entry.name === undefined ? "" : entry.name),
+        "ready": entry.ready === true,
+        "prompts": prompts === null ? 0 : Math.round(prompts),
+        "sessions": sessions === null ? 0 : Math.round(sessions)
+    }
+}
+
 // The CPU marketing name, exactly as /proc/cpuinfo publishes it.
 function parseCpuModel(raw) {
     var match = String(raw || "").match(/^model name\s*:\s*(.+)$/m)
