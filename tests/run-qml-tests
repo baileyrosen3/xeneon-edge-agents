@@ -21,6 +21,12 @@ find quickshell -name '*.qml' -type f -print0 |
 PYTHONDONTWRITEBYTECODE=1 \
   python -m unittest discover -s quickshell/tests -p 'test_*.py' -v
 
+if ! command -v node >/dev/null 2>&1; then
+  printf 'warning: node was not found on PATH.\n' >&2
+  printf 'warning: quickshell/home/tests/test_home_behaviour.py executes the config JavaScript validators through node; without it those behavioural tests cannot run.\n' >&2
+  printf 'warning: fix: add nodejs to the pacman -S line in the qml job install step of .github/workflows/ci.yml\n' >&2
+fi
+
 PYTHONDONTWRITEBYTECODE=1 \
   python -m unittest discover -s quickshell/home/tests -p 'test_*.py' -v
 
