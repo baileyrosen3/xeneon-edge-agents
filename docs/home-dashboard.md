@@ -96,11 +96,10 @@ fallback to the primary display, and no code path can reach one.
 | `XENEON_HOME_PREVIEW=1` | Preview mode: a `FloatingWindow`, no live surface. |
 | `XENEON_HOME_PREVIEW_SIZE=<WxH>` | Preview size, validated and bounded to 640–3840 × 180–720. Default `1280x360`. |
 | `XENEON_HOME_SHOT=<path>` | With preview, write a PNG and exit. |
-| `XENEON_HOME_REDUCED_MOTION=1` | Disables every animation; honoured per-`Behavior`. |
+| `XENEON_HOME_REDUCED_MOTION=1` | Disables every animation, in preview **and** on the live surface. Honoured per-`Behavior` by each animated component. |
 | `XENEON_HOME_SETTINGS_PATH=<path>` | Preference file location. |
 | `XENEON_HOME_SERIAL` / `_MODEL` / `_OUTPUT` | Live screen identity. All three required. |
 | `XENEON_HOME_WALLPAPER=<path>` | Optional wallpaper backdrop. Unset by default; see below. |
-| `XENEON_HOME_THEME_ROOT` | Falls back to `$XDG_STATE_HOME/omarchy/current`. |
 
 ### Stats presentation
 
@@ -153,7 +152,6 @@ quickshell/home/
     TransportButton.qml          One transport control
     StatMeter.qml                One measured quantity
     StatsStack.qml               CPU / GPU / memory columns
-    IconResolver.qml             Real application icon resolution
   state/
     OmarchyTheme.qml             Verbatim copy of the palette parser
     ThemePalette.js              Verbatim copy of the palette parser
@@ -163,7 +161,8 @@ quickshell/home/
     SourceBase.qml               Uniform source contract
     SourceParse.js               Pure parsers
     HomeSettings.qml             Persisted preferences
-    IconResolver.qml             Icon resolution (shared by components)
+    IconResolver.qml             Real application icon resolution (listed once,
+                                  here; the components reference it from state/)
     <Source>.qml                 One independent, replaceable data source
   tests/
     test_home_contract.py        Contract tests for this config
@@ -187,7 +186,7 @@ Availability below is measured on the authoring host.
 | `GpuSource` | `/sys/class/drm/card*/device`, hwmon, `/usr/share/hwdata/pci.ids` | working |
 | `MediaSource` | Quickshell MPRIS service | **unavailable — no MPRIS player registered** |
 | `AudioSource` | `pactl` | working |
-| `NetworkSource` | `/proc/net/route`, `nmcli` | working |
+| `NetworkSource` | `/proc/net/route`, `nmcli` | working; the route is read from the file and `nmcli` supplies the connection name and wireless counts |
 | `BluetoothSource` | `bluetoothctl` | working |
 | `PowerSource` | Quickshell UPower service | working |
 | `TraySource` | Quickshell SystemTray service | working |
@@ -237,7 +236,17 @@ Four action kinds:
 | `audio` / `desktop` | none; a fixed executable, presence-probed once |
 
 An executable's presence is probed once per process with `/usr/bin/test -x`,
-using only a path from the table. A tile whose target is missing is drawn struck
-through rather than pretending to launch.
+using only a path from the table. Ids that have actually been checked are tracked
+separately from the optimistic seed map, so the probe really runs and a tile
+whose target is missing is drawn struck through rather than pretending to launch.
+
+Launcher actions are **detached**: they start through `Quickshell.execDetached`
+and never take the single-flight lock, because a terminal or a music player stays
+alive for hours and holding the lock would disable every later action. Genuine
+one-shot control actions do hold the lock, and a watchdog releases it so a wedged
+command cannot disable the surface.
+
+A refused action is shown on the strip for four seconds, not only written to the
+console log.
 
 Screenshots in this repository are regenerated locally and are not committed.

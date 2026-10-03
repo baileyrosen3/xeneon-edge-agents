@@ -178,6 +178,24 @@ Item {
     // Every pill shows a recognisable glyph AND a short text label, so nothing
     // is ever a bare dash or a lone letter. A pill whose source has no state at
     // all is hidden entirely rather than drawn empty.
+    // A refused action says so here rather than only in the log. It sits on the
+    // far left of the pill group, where nothing else competes for the space.
+    Text {
+        id: refusalText
+        anchors.right: pills.left
+        anchors.rightMargin: root.regionGap
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.verticalCenterOffset: -root.edgeSafe * 0.35
+        visible: root.dispatcher.visibleRefusal !== ""
+        text: root.dispatcher.visibleRefusalAction + ": " + root.dispatcher.visibleRefusal
+        color: String(root.theme.textMuted)
+        font.family: Design.fontFamily
+        font.pixelSize: Design.type.caption.size
+        font.weight: Design.type.caption.weight
+        font.letterSpacing: 0.2
+        elide: Text.ElideLeft
+    }
+
     Row {
         id: pills
         anchors.right: parent.right

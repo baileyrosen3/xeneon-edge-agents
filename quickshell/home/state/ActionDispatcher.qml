@@ -32,6 +32,7 @@ QtObject {
     property int refusedCount: 0
     property string lastAction: ""
     property string lastOutcome: ""
+    property bool lastAccepted: true
 
     signal dispatched(string actionId, bool accepted, string detail)
     signal commandStarted(string actionId, var argv)
@@ -131,6 +132,20 @@ QtObject {
         if (!root.isAvailable(actionId))
             return refuse(actionId, executableName(actionId) + " is not installed")
 
+        // A launcher is not a one-shot. `/usr/bin/foot` and `/usr/bin/spotify`
+        // stay alive for hours, so holding a single-flight lock on process
+        // lifetime would disable every later action for the rest of the
+        // session. These start detached and never take the lock.
+        if (isDetached(actionId)) {
+            Quickshell.execDetached(argv)
+            root.log("dispatch " + actionId + " (detached)", true)
+            commandStarted(actionId, argv)
+            accept(actionId, "Launched")
+            return true
+        }
+
+        // Everything else is a genuine one-shot and does hold the lock, but a
+        // watchdog releases it so a wedged command cannot disable the surface.
         if (root.runner.running)
             return refuse(actionId, "Another action is already running")
 
@@ -140,7 +155,35 @@ QtObject {
         commandStarted(actionId, argv)
         root.runner.command = argv
         root.runner.running = true
+        actionWatchdog.restart()
         return true
+    }
+
+    // Whether an action is a long-lived launcher.
+    function isDetached(actionId) {
+        var record = Allowlist.entry(actionId)
+        return record !== null && record.detached === true
+    }
+
+    // Releases the single-flight lock if a one-shot command outruns its budget.
+    // The action is reported as timed out rather than left silently pending.
+    property Timer watchdog: Timer {
+        id: actionWatchdog
+        interval: root.actionTimeoutMs
+        repeat: false
+        onTriggered: root.releaseLock("Action exceeded its time budget")
+    }
+
+    // Releases the single-flight lock and reports the action that held it.
+    // Used by the watchdog so the timeout path is identical to the exit path.
+    function releaseLock(reason) {
+        if (!root.runner.running && root.runningAction === "")
+            return
+        root.runner.running = false
+        var actionId = root.runningAction
+        root.runningAction = ""
+        root.runningArgv = null
+        root.refuse(actionId, reason)
     }
 
     // A fixed MPRIS method name, resolved through the allowlist and called only
@@ -188,6 +231,9 @@ QtObject {
     // only argument is an absolute path taken from the allowlist table. A tool
     // that is not installed is reported as unavailable rather than dispatched
     // and silently failing.
+    // Ids whose executable has actually been checked by `/usr/bin/test -x`.
+    property var probed: ({})
+
     property var presenceQueue: []
     property string probingAction: ""
 
@@ -253,7 +299,11 @@ QtObject {
         if (executable === "" || !/^\/[A-Za-z0-9._\/-]+$/.test(executable))
             return false
 
-        if (!Object.prototype.hasOwnProperty.call(root.presence, actionId)) {
+        // The guard is against `probed`, not against `presence`. Every id is
+        // already seeded in `presence`, so checking that map meant the probe
+        // never ran and a missing tool rendered as a silent no-op.
+        if (!Object.prototype.hasOwnProperty.call(root.probed, actionId)) {
+            root.probed[actionId] = false
             var seeded = Object.assign({}, root.presence)
             seeded[actionId] = true
             root.presence = seeded
@@ -282,6 +332,9 @@ QtObject {
             var updated = Object.assign({}, root.presence)
             updated[actionId] = Number(exitCode) === 0
             root.presence = updated
+            var checked = Object.assign({}, root.probed)
+            checked[actionId] = true
+            root.probed = checked
         }
         root.runNextProbe()
     }
@@ -302,7 +355,12 @@ QtObject {
     }
 
 
+    // How long a one-shot action may hold the lock. A launcher never holds it,
+    // so this only ever bounds a control action such as a volume change.
+    readonly property int actionTimeoutMs: 4000
+
     function recordExit(exitCode) {
+        actionWatchdog.stop()
         var actionId = root.runningAction
         root.runningAction = ""
         root.runningArgv = null
@@ -315,17 +373,34 @@ QtObject {
     }
 
     function accept(actionId, detail) {
-        dispatchCount += 1
-        lastAction = actionId
-        lastOutcome = detail
-        dispatched(actionId, true, detail)
-        log("accepted " + actionId + ": " + detail, true)
+        root.dispatchCount += 1
+        root.lastAccepted = true
+        root.lastAction = actionId
+        root.lastOutcome = detail
+        root.dispatched(actionId, true, detail)
+        root.log("accepted " + actionId + ": " + detail, true)
+    }
+
+    // A refusal the user can see. The strip renders this next to the dock, so a
+    // tap that does nothing is never silent.
+    property string visibleRefusal: ""
+    property string visibleRefusalAction: ""
+    property Timer refusalTimer: Timer {
+        interval: 4000
+        repeat: false
+        onTriggered: {
+            root.visibleRefusal = ""
+            root.visibleRefusalAction = ""
+        }
     }
 
     function refuse(actionId, detail) {
         refusedCount += 1
         lastAction = actionId
         lastOutcome = String(detail)
+        root.visibleRefusalAction = actionId
+        root.visibleRefusal = String(detail)
+        root.refusalTimer.restart()
         dispatched(actionId, false, lastOutcome)
         log("refused " + actionId + ": " + lastOutcome, false)
         return false

@@ -65,7 +65,17 @@ QtObject {
         return published
     }
 
+    // Logged only when the published list actually changes, so a polled source
+    // does not emit a line on every tick.
+    property string lastSignature: ""
+
     function logChanged() {
+        var signature = root.entries.map(function(entry) {
+            return String(entry.id) + ":" + String(entry.title)
+        }).join("|")
+        if (signature === root.lastSignature)
+            return
+        root.lastSignature = signature
         console.log("xeneon-home[tray] " + root.entries.length + " tray entries"
         )
     }

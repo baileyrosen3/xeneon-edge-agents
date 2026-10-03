@@ -45,11 +45,12 @@ Item {
     // fits inside the band instead of the last one being clipped.
     property bool compact: false
 
+    // Whether a measurement actually exists. This is derived from the numbers
+    // alone: an em dash is how a missing reading is *rendered*, never a reading
+    // in itself, so the bar and the value can never disagree.
     readonly property bool hasReading: root.kind === "temperature"
         ? root.celsius >= 0
-        : root.kind === "capacity"
-            ? root.capacityLabel !== ""
-            : root.percent >= 0
+        : root.percent >= 0
 
     readonly property real fraction: root.kind === "temperature"
         ? Math.max(0, Math.min(1, root.celsius / 100))

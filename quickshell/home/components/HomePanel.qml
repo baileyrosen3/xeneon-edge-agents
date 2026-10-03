@@ -21,9 +21,15 @@ PanelWindow {
     // Both are set by the loader once this panel exists.
     property var context: null
 
+    // Reduced motion reaches the real surface, not just the preview.
     property bool reducedMotion: false
 
-    screen: modelData
+
+    // `screen` is only ever set to an already-verified screen, and the window
+    // stays hidden until that has happened. A null screen would resolve to the
+    // primary display, which is precisely what the identity rule forbids.
+    screen: root.modelData === null ? undefined : root.modelData
+    visible: root.modelData !== null
     color: root.context.theme.canvas
     surfaceFormat.opaque: true
     focusable: false

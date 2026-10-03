@@ -61,6 +61,10 @@ QtObject {
     property string currentLabel: ""
     property bool followedUp: false
 
+    // Guards a single probe cycle against a double settle. Armed when a probe
+    // starts and cleared when it settles.
+    property bool probeSettled: true
+
     property Process runner: Process {
         running: false
         stdout: SplitParser {
@@ -76,8 +80,7 @@ QtObject {
         }
         onStarted: root.probeTimer.restart()
         onExited: function(exitCode) {
-            root.probeTimer.stop()
-            root.finishProbe(Number(exitCode))
+            root.settleProbe(Number(exitCode))
         }
     }
 
@@ -92,8 +95,7 @@ QtObject {
             // can never stall the surface or report a stale reading as fresh.
             if (root.runner.running)
                 root.runner.running = false
-            root.errors.push("probe timed out")
-            root.finishProbe(-1)
+            root.settleProbe(-1, "timed out")
         }
     }
 
@@ -188,6 +190,9 @@ QtObject {
             return
         }
 
+        // Arm the cycle before starting, so the exit handler and the watchdog
+        // both settle exactly once.
+        root.probeSettled = false
         root.runner.command = argv
         root.runner.running = true
     }
@@ -230,7 +235,7 @@ QtObject {
         // shell would treat specially. A leading `@` is permitted because
         // PulseAudio sink tokens are spelled `@DEFAULT_SINK@`, which is a
         // literal the table supplies, never anything a caller supplies.
-        return /^[@A-Za-z0-9][A-Za-z0-9._@%-]{0,31}$/.test(value)
+        return /^[@A-Za-z0-9][A-Za-z0-9._@%,\-]{0,63}$/.test(value)
     }
 
     // Keeps only follow-up probes that read a validated /proc or /sys path.
@@ -256,6 +261,19 @@ QtObject {
         return accepted
     }
 
+
+    // The single exit for one probe cycle. Whichever of the exit handler and the
+    // watchdog arrives first closes the cycle; the other is ignored, so a timed
+    // out probe can never be recorded twice.
+    function settleProbe(exitCode, timeoutReason) {
+        if (root.probeSettled)
+            return
+        root.probeSettled = true
+        root.probeTimer.stop()
+        if (timeoutReason !== undefined && timeoutReason !== null)
+            root.errors.push(String(timeoutReason))
+        root.finishProbe(Number(exitCode))
+    }
 
     function finishProbe(exitCode) {
         root.collected[root.currentLabel] = {

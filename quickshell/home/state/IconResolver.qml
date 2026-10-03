@@ -92,12 +92,37 @@ QtObject {
         root.listNext()
     }
 
+    // Bounds one listing, so a hung mount can never stall resolution forever.
+    property Timer listingWatchdog: Timer {
+        interval: 3000
+        repeat: false
+        onTriggered: {
+            if (root.listing)
+                root.settle(false, true)
+        }
+    }
+
+    // The single exit for one listing, so the watchdog and the exit handler
+    // cannot both advance the directory index.
+    function settle(found, timedOut) {
+        if (!root.listing)
+            return
+        root.listing = false
+        root.listingWatchdog.stop()
+        root.directoryIndex += 1
+        if (found === true)
+            root.merge(root.pendingDirectory, root.listingLines)
+        root.listingLines = []
+        root.listNext()
+    }
+
     function listNext() {
         if (root.listing || root.directoryIndex >= root.searchPaths.length)
             return
         var directory = String(root.searchPaths[root.directoryIndex])
         root.pendingDirectory = directory
         root.listing = true
+        root.listingLines = []
         directoryProbe.command = ["/usr/bin/ls", directory]
         directoryProbe.running = true
     }
@@ -111,13 +136,11 @@ QtObject {
                 root.listingLines.push(String(line === undefined || line === null ? "" : line))
             }
         }
+        // Both the exit handler and the watchdog route through `settle`, so the
+        // directory index advances exactly once per listing.
+        onStarted: root.listingWatchdog.restart()
         onExited: function(exitCode) {
-            root.listing = false
-            root.directoryIndex += 1
-            if (Number(exitCode) === 0)
-                root.merge(root.pendingDirectory, root.listingLines)
-            root.listingLines = []
-            root.listNext()
+            root.settle(Number(exitCode) === 0)
         }
     }
 

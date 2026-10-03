@@ -240,7 +240,12 @@ class HomeActionAllowlistContractTests(unittest.TestCase):
         self.assertIn("function dispatch(actionId, parameter)", self.dispatcher)
         self.assertIn("Allowlist.plan(", self.dispatcher)
         self.assertIn("runner.command = argv", self.dispatcher)
-        for forbidden in ("execDetached", "Quickshell.execDetached", "h5", "keySequence"):
+        # execDetached is the sanctioned path for a long-lived launcher. It may
+        # only ever receive the argv the allowlist resolved, never a string.
+        self.assertIn("Quickshell.execDetached(argv)", self.dispatcher)
+        self.assertNotIn("execDetached(self.", self.dispatcher)
+        self.assertNotIn("execDetached(root.", self.dispatcher)
+        for forbidden in ("h5", "keySequence", "sendKeys"):
             self.assertNotIn(forbidden, self.dispatcher)
 
     def test_dispatch_logs_both_accepted_and_refused_actions(self):

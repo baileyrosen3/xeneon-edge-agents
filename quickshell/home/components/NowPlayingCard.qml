@@ -120,7 +120,7 @@ Item {
                     anchors.fill: parent
                     anchors.margins: 1
                     visible: status === Image.Ready && sourceSize.width > 0
-                    source: root.media.artUrl === "" ? "" : root.media.artUrl
+                    source: root.localArtUrl
                     fillMode: Image.PreserveAspectCrop
                     asynchronous: true
                     cache: false
@@ -369,6 +369,23 @@ Item {
     // A two-letter mark derived from the player identity, used only as the
     // artwork placeholder's label.
     readonly property string playerMonogram: monogramFor(root.media.playerName)
+
+    // Artwork is accepted only from the local filesystem. A player may publish
+    // any URL it likes, and fetching a remote one would tell a third party which
+    // track is playing. Anything that is not a file:// URL or an absolute local
+    // path is refused and the monogram placeholder is shown instead.
+    readonly property string localArtUrl: localOnly(root.media.artUrl)
+
+    function localOnly(artUrl) {
+        var text = String(artUrl === null || artUrl === undefined ? "" : artUrl).trim()
+        if (text === "")
+            return ""
+        if (text.indexOf("file://") === 0)
+            return text
+        if (text.charAt(0) === "/" && /^[A-Za-z0-9._\-\/ ]*$/.test(text))
+            return text
+        return ""
+    }
 
     function monogramFor(name) {
         var text = String(name === null || name === undefined ? "" : name).trim()

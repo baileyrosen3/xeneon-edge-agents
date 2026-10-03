@@ -47,6 +47,8 @@ QtObject {
     readonly property bool canPrevious: available ? snapshot.canPrevious === true : false
     readonly property bool canSeek: available ? snapshot.canSeek === true : false
 
+    property int sampleCount: 0
+
     property var snapshot: ({
         "available": false,
         "detail": "Waiting for the media service",
@@ -170,7 +172,11 @@ QtObject {
 
     function rebuild() {
         var entry = root.player
+        // With no player registered there is nothing that can have changed, so
+        // the snapshot is left as it is rather than republished on every tick.
         if (entry === null || entry === undefined) {
+            if (root.players.length === 0 && root.sampleCount > 0)
+                return
             root.publishUnavailable(
                 root.players.length === 0
                     ? "No MPRIS player is registered on this host"
@@ -225,6 +231,7 @@ QtObject {
     }
 
     function publish(fields) {
+        sampleCount += 1
         snapshot = Object.assign({
             "available": true,
             "detail": "",
@@ -233,6 +240,7 @@ QtObject {
     }
 
     function publishUnavailable(detail) {
+        sampleCount += 1
         snapshot = {
             "available": false,
             "detail": String(detail === undefined || detail === null ? "" : detail),

@@ -248,6 +248,7 @@ ShellRoot {
         onLoaded: {
             livePanel.item.modelData = root.targetScreens[0]
             livePanel.item.context = root.sourcesContext()
+            livePanel.item.reducedMotion = root.reducedMotion
         }
     }
 

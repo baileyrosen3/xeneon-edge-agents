@@ -26,26 +26,31 @@ var workspaceMaximum = 20
 var actions = {
     "launch.terminal": {
         "kind": "launch",
+        "detached": true,
         "label": "Terminal",
         "command": ["/usr/bin/foot"]
     },
     "launch.files": {
         "kind": "launch",
+        "detached": true,
         "label": "Files",
         "command": ["/usr/bin/nautilus"]
     },
     "launch.browser": {
         "kind": "launch",
+        "detached": true,
         "label": "Browser",
         "command": ["/usr/bin/chromium"]
     },
     "launch.spotify": {
         "kind": "launch",
+        "detached": true,
         "label": "Spotify",
         "command": ["/usr/bin/spotify"]
     },
     "launch.terminal_alt": {
         "kind": "launch",
+        "detached": true,
         "label": "Alt Terminal",
         "command": ["/usr/bin/foot", "-T", "xterm-256color"]
     },
@@ -193,8 +198,8 @@ function entry(actionId) {
 }
 
 function labelFor(actionId) {
-    var entry = entry(actionId)
-    return entry === null ? "" : String(entry.label || "")
+    var record = entry(actionId)
+    return record === null ? "" : String(record.label || "")
 }
 
 // A bounded integer workspace id. Anything else is refused, so no workspace
@@ -254,12 +259,14 @@ function validMediaMethod(name) {
 // Nothing else crosses the boundary: no raw command string, no keystroke, and
 // no caller-named method.
 function plan(actionId, parameter, context) {
-    var entry = entry(actionId)
-    if (entry === null)
+    // Not named `entry`: that would shadow the lookup function above and make
+    // every call throw.
+    var record = entry(actionId)
+    if (record === null)
         return { "error": "Action is not allowlisted" }
 
-    var kind = String(entry.kind || "")
-    var parameterKind = String(entry.parameter || "none")
+    var kind = String(record.kind || "")
+    var parameterKind = String(record.parameter || "none")
 
     if (parameterKind !== "none" && (parameter === undefined || parameter === null))
         return { "error": "Action requires a parameter" }
@@ -267,7 +274,7 @@ function plan(actionId, parameter, context) {
         return { "error": "Action takes no parameter" }
 
     if (kind === "media") {
-        var method = validMediaMethod(entry.handler)
+        var method = validMediaMethod(record.handler)
         if (method === null)
             return { "error": "Media method is not allowlisted" }
 
@@ -281,7 +288,7 @@ function plan(actionId, parameter, context) {
         return { "method": method }
     }
 
-    var command = entry.command
+    var command = record.command
     if (!Array.isArray(command) || command.length === 0)
         return { "error": "Action has no fixed command" }
 
@@ -308,12 +315,12 @@ function plan(actionId, parameter, context) {
 // The fixed probe for an entry whose executable may be absent on this host.
 // Presence is decided by a fixed argv, never by a caller-supplied path.
 function probeFor(actionId) {
-    var entry = entry(actionId)
-    if (entry === null)
+    var record = entry(actionId)
+    if (record === null)
         return null
-    if (entry.checked !== true)
+    if (record.checked !== true)
         return null
-    var probe = entry.probe
+    var probe = record.probe
     return Array.isArray(probe) && probe.length > 0 ? probe.slice() : null
 }
 
