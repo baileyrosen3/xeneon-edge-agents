@@ -40,6 +40,11 @@ Item {
 
     property bool reducedMotion: false
 
+    // Compact mode is chosen from the height the column actually has. It drops
+    // the trailing line and steps the value down one size, so every meter still
+    // fits inside the band instead of the last one being clipped.
+    property bool compact: false
+
     readonly property bool hasReading: root.kind === "temperature"
         ? root.celsius >= 0
         : root.kind === "capacity"
@@ -91,7 +96,7 @@ Item {
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
-        spacing: 3
+        spacing: root.compact ? 2 : 3
 
         Text {
             id: headingText
@@ -111,7 +116,7 @@ Item {
             text: root.valueLabel
             color: root.valueColor
             font.family: Design.fontFamily
-            font.pixelSize: Design.type.metric.size
+            font.pixelSize: root.compact ? 16 : Design.type.metric.size
             font.weight: Design.type.metric.weight
             font.letterSpacing: Design.type.metric.tracking
             elide: Text.ElideRight
@@ -120,7 +125,7 @@ Item {
         Text {
             id: subText
             width: parent.width
-            visible: root.subLabel !== ""
+            visible: root.subLabel !== "" && !root.compact
             text: root.subLabel
             color: String(root.theme.textMuted)
             font.family: Design.fontFamily
@@ -135,7 +140,7 @@ Item {
         Item {
             id: track
             width: parent.width
-            height: 5
+            height: root.compact ? 4 : 5
 
             Squircle {
                 id: trackFill

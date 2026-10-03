@@ -29,13 +29,20 @@ Item {
         corner: Design.radius.card
     }
 
+    // The height each column actually has, and whether that is enough for a
+    // full meter set. Decided from geometry, so the last row is always inside
+    // the band on any surface height.
+    readonly property int rowBudget: columns.height
+    readonly property bool compact: rowBudget < 214
+    readonly property int rowSpacing: compact ? 4 : 9
+
     Row {
         id: columns
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
-        anchors.margins: Design.metrics.gutterCompact
+        anchors.margins: root.compact ? 10 : Design.metrics.gutterCompact
         spacing: Design.metrics.columnGapCompact
 
         // CPU. The heading names the load and the package temperature; load is
@@ -49,7 +56,7 @@ Item {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
-                spacing: 9
+                spacing: root.rowSpacing
 
                 // The device this column measures, named once.
                 Text {
@@ -68,6 +75,7 @@ Item {
                     theme: root.theme
                     reducedMotion: root.reducedMotion
                     kind: "load"
+                    compact: root.compact
                     heading: "Load"
                     percent: root.cpu.loadPercent
                     // The load average is this meter's own subline. It is only
@@ -81,6 +89,7 @@ Item {
                     theme: root.theme
                     reducedMotion: root.reducedMotion
                     kind: "temperature"
+                    compact: root.compact
                     heading: "Package"
                     celsius: root.cpu.celsius
                 }
@@ -97,7 +106,7 @@ Item {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
-                spacing: 9
+                spacing: root.rowSpacing
 
                 Text {
                     width: parent.width
@@ -115,6 +124,7 @@ Item {
                     theme: root.theme
                     reducedMotion: root.reducedMotion
                     kind: "load"
+                    compact: root.compact
                     heading: "Load"
                     percent: root.gpu.busyPercent
                 }
@@ -124,6 +134,7 @@ Item {
                     theme: root.theme
                     reducedMotion: root.reducedMotion
                     kind: "temperature"
+                    compact: root.compact
                     heading: "Core"
                     celsius: root.gpu.celsius
                 }
@@ -133,6 +144,7 @@ Item {
                     theme: root.theme
                     reducedMotion: root.reducedMotion
                     kind: "capacity"
+                    compact: root.compact
                     heading: "Video"
                     percent: root.gpuVramPercent
                     capacityLabel: root.gpuVramUsedLabel
@@ -151,7 +163,7 @@ Item {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.top: parent.top
-                spacing: 9
+                spacing: root.rowSpacing
 
                 Text {
                     width: parent.width
@@ -169,6 +181,7 @@ Item {
                     theme: root.theme
                     reducedMotion: root.reducedMotion
                     kind: "capacity"
+                    compact: root.compact
                     heading: "In use"
                     percent: root.memory.percent
                     capacityLabel: root.memoryUsedLabel
@@ -180,6 +193,7 @@ Item {
                     theme: root.theme
                     reducedMotion: root.reducedMotion
                     kind: "capacity"
+                    compact: root.compact
                     heading: "Swap"
                     percent: root.swapPercent
                     capacityLabel: root.swapUsedLabel

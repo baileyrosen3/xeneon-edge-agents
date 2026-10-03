@@ -64,6 +64,25 @@ Item {
         }
     }
 
+    // The strip is three regions in a row: the clock, the workspace group, and
+    // the status pills.
+    //
+    // Their widths are computed explicitly from the live width rather than
+    // anchored independently, because three independently anchored regions
+    // overlap as soon as the surface narrows — which is exactly what made the
+    // clock vanish at 1024x288. A shared budget means the clock is always
+    // present and always readable, the pills always get their space, and the
+    // workspace group absorbs whatever is left.
+    readonly property real regionWidth: Math.max(0, width - edgeSafe * 2)
+    readonly property real regionGap: 12
+
+    readonly property real clockBudget: Math.round(regionWidth * 0.30)
+    readonly property real pillsBudget: Math.round(regionWidth * 0.50)
+    readonly property real workspaceBudget: Math.max(
+        0,
+        regionWidth - clockBudget - pillsBudget - regionGap * 2
+    )
+
     // Clock and date, left-aligned. The clock is the large title of the strip:
     // it is the one number a user reads without aiming.
     Item {
@@ -73,7 +92,13 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         anchors.verticalCenterOffset: -root.edgeSafe * 0.35
         height: clockText.implicitHeight
-        width: clockRow.implicitWidth + (root.showDate ? dateText.implicitWidth + 14 : 0)
+        width: Math.min(
+            clockRow.implicitWidth + (root.showDate ? dateText.implicitWidth + 14 : 0),
+            root.clockBudget
+        )
+        // The clock is never dropped. If the date cannot fit beside it, the
+        // date is what gives way.
+        visible: root.regionWidth > 0
 
         Row {
             id: clockRow
@@ -112,7 +137,9 @@ Item {
 
         Text {
             id: dateText
-            visible: root.showDate && root.clock.available
+            visible: root.showDate
+                && root.clock.available
+                && dateText.implicitWidth + 14 + clockRow.implicitWidth <= root.clockBudget
             anchors.left: clockRow.right
             anchors.leftMargin: 14
             anchors.verticalCenter: parent.verticalCenter
@@ -130,7 +157,8 @@ Item {
     // with a bounded integer id, so a tap can never carry a string into argv.
     WorkspaceIndicator {
         id: workspaces
-        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.left: clockBlock.right
+        anchors.leftMargin: root.regionGap
         anchors.verticalCenter: parent.verticalCenter
         anchors.verticalCenterOffset: -root.edgeSafe * 0.35
         visible: root.showWorkspaceIndicator
@@ -139,6 +167,9 @@ Item {
         dispatcher: root.dispatcher
         reducedMotion: root.reducedMotion
         height: root.pillHeight
+        // The group never exceeds the space the budget left for it, so the
+        // pills to its right are never displaced.
+        maximumWidth: root.workspaceBudget
     }
 
     // Status pills and the tray, right-aligned in one group so they read as a
@@ -154,6 +185,7 @@ Item {
         anchors.verticalCenter: parent.verticalCenter
         anchors.verticalCenterOffset: -root.edgeSafe * 0.35
         spacing: 8
+        // Caps the group at its budget so it can never grow into the clock.
 
         // Indicators first: these are states the user toggles.
         IndicatorPill {

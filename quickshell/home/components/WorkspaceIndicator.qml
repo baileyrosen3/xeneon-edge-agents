@@ -25,14 +25,42 @@ Item {
     // Bounded so a host with many dynamic workspaces cannot grow the strip
     // without limit.
     readonly property int maximumWorkspaces: 10
-    readonly property var shown: root.workspaces.slice(0, root.maximumWorkspaces)
 
     readonly property int pillWidth: Design.compactHeight(root.height) ? 24 : 27
     readonly property real gap: 5
 
+    // The width this group is allowed. It never exceeds the space the strip's
+    // budget left for it, so it cannot displace the pills beside it.
+    property real maximumWidth: 0
+
+    readonly property real overflowWidth: Design.type.caption.size + 14
+    readonly property real overflowHeight: pillWidth
+
+    // How many real workspaces fit in the budget. Any remainder is shown as an
+    // explicit count rather than being silently dropped.
+    readonly property int capacity: maximumWidth <= 0
+        ? root.maximumWorkspaces
+        : Math.max(
+            1,
+            Math.floor(
+                (maximumWidth - (workspaces.length > 0 ? overflowWidth : 0) + gap)
+                    / (pillWidth + gap)
+            )
+        )
+
+    readonly property bool overflowing: root.workspaces.length > root.capacity
+    readonly property int hiddenCount: root.workspaces.length - root.capacity
+    readonly property var shown: root.workspaces.slice(0, root.capacity)
+
     implicitHeight: height
-    implicitWidth: row.implicitWidth + 8
+    implicitWidth: Math.min(
+        root.maximumWidth > 0 ? root.maximumWidth : Number.POSITIVE_INFINITY,
+        row.implicitWidth + 8
+    )
     height: 32
+    // The group clips rather than growing, so it can never push into a
+    // neighbouring region of the strip.
+    clip: root.maximumWidth > 0
 
     Accessible.role: Accessible.StaticText
     Accessible.name: root.available
@@ -64,6 +92,18 @@ Item {
         anchors.centerIn: parent
         spacing: root.gap
         visible: root.available
+
+        // The overflow counter is the last child of the same Row, so it can
+        // never overlap a pill.
+        Text {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.overflowing
+            text: "+" + root.hiddenCount
+            color: String(root.theme.textMuted)
+            font.family: Design.fontFamily
+            font.pixelSize: Design.type.caption.size + 1
+            font.weight: 700
+        }
 
         Repeater {
             model: root.shown
@@ -125,8 +165,8 @@ Item {
                         ? String(root.theme.canvas)
                         : String(root.theme.textSecondary)
                     font.family: Design.fontFamily
-                    font.pixelSize: Design.type.caption.size
-                    font.weight: 600
+                    font.pixelSize: Design.type.caption.size + 1
+                    font.weight: 700
 
                     Behavior on color {
                         enabled: !root.reducedMotion
