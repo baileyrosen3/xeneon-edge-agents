@@ -19,7 +19,10 @@ PanelWindow {
 
     // The verified screen and the single context object holding every source.
     // Both are set by the loader once this panel exists.
-    property var context: null
+    // Never null. The live loader injects the context after this item is
+    // constructed, so the default must at least be an object; otherwise every
+    // source read below dereferences null on the first frame.
+    property var context: ({})
 
     // Reduced motion reaches the real surface, not just the preview.
     property bool reducedMotion: false

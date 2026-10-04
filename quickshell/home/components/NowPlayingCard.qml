@@ -15,11 +15,31 @@ Item {
 
     required property var theme
     required property var dispatcher
-    required property var media
+    // The media source is bound asynchronously: on the live panel the source
+    // context is injected after this component is constructed, so `media` is
+    // briefly absent. Every read below goes through an explicit idle value
+    // rather than dereferencing a source that does not exist yet.
+    property var media: null
 
     property bool reducedMotion: false
 
-    readonly property bool available: media.available
+    // The source, or null while it is still being bound.
+    readonly property var source: root.media === undefined || root.media === null
+        ? null
+        : root.media
+
+    // Explicit idle state: nothing playing, no position, no length. The card
+    // renders an empty artwork square and a zeroed scrubber.
+    readonly property bool available: root.source !== null
+        && root.source.available === true
+    readonly property double lengthSeconds: root.available
+        && Number(root.source.lengthSeconds) > 0 ? Number(root.source.lengthSeconds) : -1
+    readonly property double positionSeconds: root.available
+        && Number(root.source.positionSeconds) >= 0 ? Number(root.source.positionSeconds) : -1
+    readonly property real progress: root.lengthSeconds > 0
+        ? Math.max(0, Math.min(1, root.positionSeconds / root.lengthSeconds))
+        : 0
+    readonly property bool canSeek: root.available && root.source.canSeek === true
 
     readonly property int artworkSize: Design.compactHeight(root.height) ? 58 : 68
     readonly property int controlSize: 30
@@ -45,7 +65,7 @@ Item {
                 id: artwork
                 anchors.fill: parent
                 anchors.margins: 1
-                visible: root.media.artUrl !== "" && status === Image.Ready
+                visible: root.mediaValue("artUrl") !== "" && status === Image.Ready
                         && sourceSize.width > 0
                 source: root.localArtUrl
                 fillMode: Image.PreserveAspectCrop
@@ -57,7 +77,7 @@ Item {
             Text {
                 anchors.centerIn: parent
                 visible: !artwork.visible
-                text: root.media.artUrl === "" ? root.playerMonogram : ""
+                text: root.mediaValue("artUrl") === "" ? root.monogramFor(root.mediaValue("playerName")) : ""
                 color: String(root.theme.textSecondary)
                 font.family: Design.fontFamily
                 font.pixelSize: Design.type.metric.size - 4
@@ -73,7 +93,7 @@ Item {
 
             Text {
                 width: parent.width
-                text: root.media.title
+                text: root.mediaValue("title")
                 color: String(root.theme.textPrimary)
                 font.family: Design.fontFamily
                 font.pixelSize: Design.type.title.size
@@ -85,8 +105,8 @@ Item {
 
             Text {
                 width: parent.width
-                visible: root.media.artist !== ""
-                text: root.media.artist
+                visible: root.mediaValue("artist") !== ""
+                text: root.mediaValue("artist")
                 color: String(root.theme.textSecondary)
                 font.family: Design.fontFamily
                 font.pixelSize: Design.type.subheadline.size
@@ -114,8 +134,8 @@ Item {
                     anchors.left: track.left
                     anchors.verticalCenter: track.verticalCenter
                     height: track.height
-                    width: root.media.lengthSeconds > 0
-                        ? Math.max(0, Math.min(track.width, track.width * root.media.progress))
+                    width: root.lengthSeconds > 0
+                        ? Math.max(0, Math.min(track.width, track.width * root.progress))
                         : 0
                     radius: 1.5
                     color: String(root.theme.textPrimary)
@@ -126,7 +146,7 @@ Item {
                     anchors.top: track.bottom
                     anchors.topMargin: 3
                     anchors.left: parent.left
-                    text: Parse.formatDuration(root.media.positionSeconds)
+                    text: Parse.formatDuration(root.positionSeconds)
                     color: String(root.theme.textMuted)
                     font.family: Design.monospaceFamily
                     font.pixelSize: Design.type.mono.size
@@ -137,7 +157,7 @@ Item {
                     anchors.topMargin: 3
                     anchors.right: parent.right
                     text: "-" + Parse.formatDuration(
-                        Math.max(0, root.media.lengthSeconds - Math.max(0, root.media.positionSeconds)))
+                        Math.max(0, root.lengthSeconds - Math.max(0, root.positionSeconds)))
                     color: String(root.theme.textMuted)
                     font.family: Design.monospaceFamily
                     font.pixelSize: Design.type.mono.size
@@ -146,23 +166,23 @@ Item {
                 MouseArea {
                     id: scrubber
                     anchors.fill: parent
-                    enabled: root.media.canSeek && root.media.lengthSeconds > 0
+                    enabled: root.canSeek && root.lengthSeconds > 0
                     hoverEnabled: true
                     preventStealing: true
                     cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
 
                     function positionAt(point) {
                         var fraction = (point.x - track.x) / Math.max(1, track.width)
-                        return Math.max(0, Math.min(1, fraction)) * root.media.lengthSeconds
+                        return Math.max(0, Math.min(1, fraction)) * root.lengthSeconds
                     }
 
                     onPressed: function(point) {
-                        if (root.media.canSeek)
+                        if (root.canSeek)
                             root.dispatcher.dispatch("media.seek", positionAt(point))
                     }
 
                     onPositionChanged: function(point) {
-                        if (pressed && root.media.canSeek)
+                        if (pressed && root.canSeek)
                             root.dispatcher.dispatch("media.seek", positionAt(point))
                     }
                 }
@@ -179,7 +199,7 @@ Item {
                     glyph: "◀◀"
                     label: "Previous track"
                     actionId: "media.previous"
-                    controlEnabled: root.media.canPrevious
+                    controlEnabled: root.mediaValue("canPrevious")
                 }
 
                 TransportButton {
@@ -187,10 +207,10 @@ Item {
                     dispatcher: root.dispatcher
                     reducedMotion: root.reducedMotion
                     size: root.primaryControlSize
-                    glyph: root.media.playing ? "❚❚" : "▶"
-                    label: root.media.playing ? "Pause" : "Play"
+                    glyph: root.mediaValue("playing") ? "❚❚" : "▶"
+                    label: root.mediaValue("playing") ? "Pause" : "Play"
                     actionId: "media.toggle"
-                    controlEnabled: root.media.canToggle
+                    controlEnabled: root.mediaValue("canToggle")
                     primary: true
                 }
 
@@ -202,7 +222,7 @@ Item {
                     glyph: "▶▶"
                     label: "Next track"
                     actionId: "media.next"
-                    controlEnabled: root.media.canNext
+                    controlEnabled: root.mediaValue("canNext")
                 }
             }
         }
@@ -210,7 +230,18 @@ Item {
 
     // Artwork is accepted only from the local filesystem: a remote URL would
     // tell a third party which track is playing.
-    readonly property string localArtUrl: localOnly(root.media.artUrl)
+    // One guarded accessor for every source field, so an absent source yields
+    // an idle value instead of a TypeError on the first frame.
+    function mediaValue(field) {
+        if (root.source === null || !root.available)
+            return (field === "playing" || field === "available") ? false : ""
+        var value = root.source[field]
+        if (value === undefined || value === null)
+            return (field === "playing" || field === "available") ? false : ""
+        return value
+    }
+
+    readonly property string localArtUrl: localOnly(root.mediaValue("artUrl"))
 
     function localOnly(artUrl) {
         var text = String(artUrl === null || artUrl === undefined ? "" : artUrl).trim()
@@ -223,7 +254,7 @@ Item {
         return ""
     }
 
-    readonly property string playerMonogram: monogramFor(root.media.playerName)
+    readonly property string playerMonogram: monogramFor(root.mediaValue("playerName"))
 
     function monogramFor(name) {
         var text = String(name === null || name === undefined ? "" : name).trim()
