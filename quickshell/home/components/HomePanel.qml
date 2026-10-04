@@ -31,7 +31,10 @@ PanelWindow {
     screen: root.modelData === null ? undefined : root.modelData
     visible: root.modelData !== null
     color: root.context.theme.canvas
-    surfaceFormat.opaque: true
+    // Non-opaque so the desktop's own `omarchy-background` layer is visible
+    // through the panel. ThemeBackdrop also draws the image itself as a safety
+    // net, so this never depends on that layer being present.
+    surfaceFormat.opaque: false
     focusable: false
     mask: null
 
@@ -74,6 +77,7 @@ PanelWindow {
         agentsUsage: root.context.agentsUsage
         clipboard: root.context.clipboard
         notifications: root.context.notifications
+        compositorIdentity: root.context.compositorIdentity
         reducedMotion: root.reducedMotion
     }
 }

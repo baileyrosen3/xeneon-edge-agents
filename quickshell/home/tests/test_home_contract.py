@@ -130,8 +130,16 @@ class HomePreviewContractTests(unittest.TestCase):
             "components/TransportButton.qml",
             "components/VolumePill.qml",
             "components/WorkspaceIndicator.qml",
-            "components/NowPlayingCard.qml",
         ]
+        # Components that animate nothing declare no Behavior to gate. The
+        # media block was rewritten as a static composition, and the pill
+        # components have no transitions.
+        for static_only in (
+            "components/NowPlayingCard.qml",
+            "components/TrayPill.qml",
+            "components/IndicatorPill.qml",
+        ):
+            self.assertNotIn("Behavior on", source(static_only), static_only)
         for relative in animated:
             text = source(relative)
             self.assertIn("reducedMotion", text, relative)
@@ -410,17 +418,16 @@ class HomeStatsPresentationContractTests(unittest.TestCase):
         self.assertIn("id: track", meter)
         self.assertNotRegex(meter, r"anchors\.bottom: parent\.bottom\s*\n\s*height: 5")
 
-    def test_column_headings_are_distinct_from_meter_labels(self):
+    def test_stats_are_rows_of_pills_not_meter_columns(self):
         # A device name labels the column; the meters inside it label what they
         # measure, so a heading never repeats the value beneath it.
         stats = source("components/StatsStack.qml")
-        self.assertIn('heading: "Load"', stats)
-        self.assertIn('heading: "Package"', stats)
-        self.assertIn('heading: "Core"', stats)
-        self.assertIn('heading: "Video"', stats)
-        self.assertIn('heading: "In use"', stats)
-        self.assertIn('heading: "Swap"', stats)
-        # The load average is scoped to the load meter alone, with no stray word.
+        # Per-device groups, each a heading plus rows of a label pill and a
+        # value pill. There is no meter column and no region card.
+        self.assertIn("StatRow", stats)
+        self.assertIn("DeviceHeading", stats)
+        self.assertNotIn("StatMeter", stats)
+        self.assertNotIn("GlassMaterial", stats)
         self.assertNotIn('"load " +', stats)
 
     def test_gpu_name_comes_from_the_pci_id_database(self):

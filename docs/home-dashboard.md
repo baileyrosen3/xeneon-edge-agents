@@ -89,50 +89,68 @@ quickshell --no-duplicate --path "$(pwd)/quickshell/home"
 matching screen all create *no surface at all* and log the reason. There is no
 fallback to the primary display, and no code path can reach one.
 
-### How the identity gate behaves per compositor
+### What the identity gate actually enforces
 
-All three components are always required, and the output name and model must
-match **exactly**. The serial rule is asymmetric, deliberately:
+Two independent checks must **both** pass before any layer surface is created.
 
-| Compositor | `serialNumber` published? | Behaviour |
+**1. The screen-level gate (`state/ScreenIdentity.js`).** Enforced in QML:
+
+- all three configured components — `XENEON_HOME_SERIAL`, `_MODEL`, `_OUTPUT` —
+  must be present;
+- the output name must match **exactly**;
+- the model must match **exactly**;
+- **exactly one** screen may match (zero or several both create nothing);
+- there is no primary- or first-screen fallback, and a name match alone is
+  never sufficient;
+- when the compositor publishes a screen serial, it must match exactly.
+
+**2. The compositor-reported serial gate (`CompositorIdentitySource`).**
+`hyprctl -j monitors` — the same command the packaged deployment gate already
+trusts — is polled through the ordinary bounded probe machinery (fixed argv,
+timeout, validated) and its serial for the configured output must equal
+`XENEON_HOME_SERIAL`. The verdict is three-valued:
+
+| Verdict | Meaning | Surface |
 | --- | --- | --- |
-| **Hyprland** | No — Qt reports `""` for *every* screen | The serial cannot be compared, so the gate falls back to exact output **and** model matching. |
-| A compositor that exposes EDID serials | Yes | The serial is compared **exactly**; a mismatch refuses the screen. |
+| agrees | compositor serial equals the configured serial | created |
+| contradicts | both present and different | **not created** |
+| unverifiable | the compositor reports no serial | **not created** |
 
-This asymmetry is required, not a weakening. Hyprland's `wl_output` does not
-expose an EDID serial to Qt, so demanding a non-empty runtime serial makes the
-gate unsatisfiable there and the surface can never bind — which is precisely
-the bug that let an unbindable config render flawlessly in preview.
+**The unverifiable case is a deliberate fail-closed decision.** An identity that
+cannot be verified is not an identity, and this surface is the one place where
+being wrong puts content on the wrong display. It is logged rather than silent.
+
+### Why the second check exists
+
+Hyprland's `wl_output` publishes no EDID serial to Qt: `screen.serialNumber` is
+`""` for **every** screen. Check 1 therefore cannot contradict a wrong configured
+serial on this compositor — with `XENEON_HOME_SERIAL=000000000000` the screen
+gate alone still matched DP-3. Check 2 is what closes that hole, and it is
+verified live: a deliberately wrong serial produces **zero**
+`xeneon-home-dashboard` layers on `hyprctl -j layers`.
+
+On a compositor that *does* expose EDID serials, both checks run and must agree.
+
+A separate, deployment-level identity gate also exists in the systemd unit,
+which asserts `hyprctl monitors | grep -A40 "^Monitor DP-3 " | grep -q
+"serial: $XENEON_HOME_SERIAL"` before this config is ever started. The QML gate
+is defence in depth, not a replacement for it.
 
 Only properties Qt actually publishes on Hyprland are read: `name`, `model`,
 `serialNumber`, `width`, `height`. `manufacturer`, `description`,
-`logicalWidth`/`logicalHeight`, `scale`, and `virtual` are all undefined there
-and are never touched.
+`logicalWidth`/`logicalHeight`, `scale`, and `virtual` are undefined there and
+are never touched.
 
-The gate lives in `state/ScreenIdentity.js` as a pure function and is executed
-by `tests/test_screen_identity.py`, because a rule that only runs inside a
-Quickshell process cannot be verified offline — which is how this one shipped
-broken.
+The gates live in `state/ScreenIdentity.js` and `state/SourceParse.js` as pure
+functions and are executed by `tests/test_screen_identity.py`, because a rule
+that only runs inside a Quickshell process cannot be verified offline — which
+is how two unsatisfiable/ungated variants of this rule shipped broken.
 
-### Environment
+### Panel geometry
 
-| Variable | Meaning |
-| --- | --- |
-| `XENEON_HOME_PREVIEW=1` | Preview mode: a `FloatingWindow`, no live surface. |
-| `XENEON_HOME_PREVIEW_SIZE=<WxH>` | Preview size, validated and bounded to 640–3840 × 180–720. Default `1280x360`. Verified at **`960x270`** (the live EDGE logical size), `1024x288`, and `1280x360`. |
-| `XENEON_HOME_SHOT=<path>` | With preview, write a PNG and exit. |
-| `XENEON_HOME_REDUCED_MOTION=1` | Disables every animation, in preview **and** on the live surface. Honoured per-`Behavior` by each animated component. |
-| `XENEON_HOME_SETTINGS_PATH=<path>` | Preference file location. |
-| `XENEON_HOME_SERIAL` / `_MODEL` / `_OUTPUT` | Live screen identity. All three required. |
-| `XENEON_HOME_WALLPAPER=<path>` | Optional wallpaper backdrop. Unset by default; see below. |
-
-### Stats presentation
-
-Each meter owns exactly one quantity and is laid out as one tight unit: heading,
-value, trailing line, then the meter directly beneath the value it belongs to.
-The bar is anchored inside the meter's own column rather than to the bottom of a
-stretched parent, so a reading and its bar can never drift apart. Video memory
-is its own meter rather than riding on another meter's trailing line.
+The live XENEON EDGE is `DP-3`, 2560×720 physical at scale 2.667, i.e.
+**960×270 logical** — shorter than the older commissioning figure. All three
+sizes are verified: **960×270**, **1024×288**, and **1280×360**.
 
 ## Layout
 
@@ -234,14 +252,32 @@ Notes on two deliberate absences:
   label because SMBIOS publishes no module identity on this class of machine and
   the installed capacity is already shown as the reading itself.
 
-### About the wallpaper
+### The wallpaper
 
-Omarchy themes do publish a wallpaper at `<themeRoot>/background`. This theme's
-is a regular dot field, and rendered as anything sharper than a faint smudge it
-reads as a repeating rule pattern — exactly the structural noise the backdrop
-must not carry. It is therefore **not used**; the field is a pure palette
-gradient. `XENEON_HOME_WALLPAPER` exists for a host whose wallpaper is a real
-image, and is still subject to heavy de-emphasis and a vignette.
+The panel shows the user's real Omarchy background.
+
+`~/.local/state/omarchy/current/background` is a **symlink**, and the path is
+bound rather than resolved: `omarchy theme set` deletes and recreates the whole
+`current/theme` tree and repoints that symlink, so a cached `readlink -f` result
+would point into a tree that no longer exists. A `FileView` watches the symlink
+purely for change and re-binds the image on reload; the source is emptied for one
+frame so the engine cannot serve its cached decode.
+
+The panel surface is **non-opaque**, so the desktop's own
+`omarchy-background` layer shows through. `ThemeBackdrop` *also* draws the image
+itself as a safety net: if that layer is disabled, the panel must not fall back
+to black while a valid background exists. The palette field is drawn only when no
+usable image resolved, so it can never cover a wallpaper that did load.
+
+Video is never handed to `Image`. The extensions the wallpaper plugin itself
+treats as video — `.mp4`, `.mkv`, `.webm`, `.mov`, `.m4v` — are routed to the
+palette field instead, so a video wallpaper degrades cleanly rather than leaving
+a broken-image placeholder.
+
+Legibility over an arbitrary photograph is handled by a two-layer scrim: a broad
+even darkening plus a heavier band across the top where the status text sits,
+both derived from the theme. Verified against a deliberately hostile near-white
+(250,250,252) image, where the clock, pills and meters remain legible.
 
 ## The action allowlist
 

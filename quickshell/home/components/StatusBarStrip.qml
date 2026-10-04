@@ -32,6 +32,7 @@ Item {
     required property var agentsUsage
     required property var clipboard
     required property var notifications
+    required property var compositorIdentity
 
     property bool reducedMotion: false
     property bool showDate: true

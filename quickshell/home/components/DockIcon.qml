@@ -50,6 +50,10 @@ Item {
     readonly property bool iconRendered: iconImage.status === Image.Ready
         && iconImage.sourceSize.width > 0
 
+    // A caption is drawn only when no icon could be decoded; the name is always
+    // still exposed through Accessible.
+    readonly property bool needsCaption: !root.iconRendered
+
     readonly property real pressScale: press.pressed && enabledTile
         ? Design.motion.pressScale
         : 1
@@ -58,7 +62,7 @@ Item {
         : 1
 
     implicitWidth: plateSize
-    implicitHeight: plateSize + (showLabel ? captionGap + captionHeight : 0)
+    implicitHeight: plateSize + (needsCaption ? captionGap + captionHeight : 0)
 
     // A role the theme does not publish falls back to the accent, so a tile can
     // never render a blank plate.
@@ -179,9 +183,9 @@ Item {
         }
 
         Text {
-            visible: root.showLabel
             anchors.top: plate.bottom
             anchors.topMargin: root.captionGap
+            visible: root.needsCaption
             anchors.horizontalCenter: plate.horizontalCenter
             width: plate.width + 22
             height: root.captionHeight

@@ -79,16 +79,47 @@ ShellRoot {
     readonly property string targetOutput:
         String(Quickshell.env("XENEON_HOME_OUTPUT") || "")
 
-    readonly property var matchingScreens: screensMatchingIdentity()
+    // Preview never consults screen identity, and must not log a refusal for it.
+    readonly property var matchingScreens: root.previewMode ? [] : screensMatchingIdentity()
+
+    // The three-state serial verdict: true agrees, false contradicts, null
+    // unverifiable. Before the first sample lands it is null, which must never
+    // mean "allowed".
+    readonly property var serialVerdict: root.screenSerialVerdict()
+
+    function screenSerialVerdict() {
+        var source = compositorIdentity
+        if (source === null || source === undefined || !source.available)
+            return null
+        return source.verdict
+    }
+
+    // FAIL-CLOSED on the serial. A surface is created only when:
+    //   * exactly one screen matches output + model exactly, AND
+    //   * the compositor has reported a serial for that output, AND
+    //   * that reported serial equals the configured serial.
+    //
+    // If the compositor reports no serial at all, the gate stays closed. That is
+    // deliberate: an identity that cannot be verified is not an identity, and
+    // this surface is the one place where guessing wrong would put content on
+    // the wrong display. `unverifiable` is surfaced in the log so the cause is
+    // never silent.
+    readonly property bool serialGateOpen:
+        root.targetScreens.length === 1 && root.serialVerdict === true
 
     // Exactly one match or nothing. Several matches are as unusable as none.
-    readonly property var targetScreens: (function() {
+    readonly property var screenMatches: (function() {
         var target = ScreenIdentity.targetScreen(
             Quickshell.screens,
             root.identity()
         )
         return target === null ? [] : [target]
     })()
+
+    // The screen the live surface may cover, once the serial gate agrees.
+    readonly property var targetScreens: root.serialGateOpen
+        ? root.screenMatches
+        : []
 
     // The gate itself lives in ScreenIdentity.js so it can be executed and
     // tested offline. An unsatisfiable gate in this file rendered perfectly in
@@ -117,10 +148,6 @@ ShellRoot {
         if (reason !== "")
             root.logIdentity("no surface: " + reason)
         return matches
-    }
-
-    function screenMatches(screen) {
-        return ScreenIdentity.screenMatches(screen, root.identity())
     }
 
     function logIdentity(message) {
@@ -155,6 +182,14 @@ ShellRoot {
 
         IconResolver {
             id: icons
+        }
+
+        CompositorIdentitySource {
+            id: compositorIdentity
+            // The output and serial being verified come from the configured
+            // identity, never from a caller.
+            outputName: root.targetOutput
+            configuredSerial: root.targetSerial
         }
 
         KeyboardSource {
@@ -271,7 +306,7 @@ ShellRoot {
         implicitHeight: root.previewSize.height
         minimumSize: Qt.size(640, 180)
         color: homeTheme.canvas
-        surfaceFormat.opaque: true
+        surfaceFormat.opaque: false
 
         onClosed: {
             root.previewClosing = true
@@ -312,6 +347,7 @@ ShellRoot {
             agentsUsage: agentsUsage
             clipboard: clipboard
             notifications: notifications
+            compositorIdentity: compositorIdentity
             reducedMotion: root.reducedMotion
         }
 
@@ -355,7 +391,8 @@ ShellRoot {
             "updates": updates,
             "agentsUsage": agentsUsage,
             "clipboard": clipboard,
-            "notifications": notifications
+            "notifications": notifications,
+            "compositorIdentity": compositorIdentity
         }
     }
 
