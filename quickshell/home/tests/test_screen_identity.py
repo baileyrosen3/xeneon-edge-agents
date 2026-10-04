@@ -33,6 +33,29 @@ def node_available() -> bool:
         return False
 
 
+def run_parse_js(script: str):
+    """Runs a snippet with SourceParse.js loaded as `Parse`."""
+    prelude = (
+        'const fs = require("fs");\n'
+        'const src = fs.readFileSync(process.argv[1], "utf8")'
+        '  .replace(/^\\.pragma library\\n/, "");\n'
+        'const mod = {exports: {}};\n'
+        'new Function("module", "exports",'
+        ' src + "\\nmodule.exports={parseMonitorSerial,serialVerdict};")(mod, mod.exports);\n'
+        'const Parse = mod.exports;\n'
+    )
+    result = subprocess.run(
+        ["node", "-e", prelude + script, str(STATE / "SourceParse.js")],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr.strip())
+    return json.loads(result.stdout.strip())
+
+
 def run_js(script: str):
     prelude = (
         'const fs = require("fs");\n'
@@ -46,7 +69,7 @@ def run_js(script: str):
         'const S = mod.exports;\n'
     )
     result = subprocess.run(
-        ["node", "-e", prelude + script, str(STATE / "ScreenIdentity.js")],
+        ["node", "-e", prelude + script, str(STATE / "ScreenIdentity.js"), str(STATE / "SourceParse.js"), str(STATE / "SourceParse.js")],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -358,7 +381,11 @@ class ScreenIdentitySourceTests(unittest.TestCase):
         docs = (HOME.parent.parent / "docs" / "home-dashboard.md").read_text(
             encoding="utf-8"
         )
-        self.assertIn("960x270", docs)
+        # The live panel geometry is documented, in either notation.
+        self.assertTrue(
+            "960x270" in docs or "960×270" in docs,
+            "the live 960x270 logical geometry must be documented",
+        )
 
 
 if __name__ == "__main__":

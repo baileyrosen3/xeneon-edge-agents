@@ -400,6 +400,47 @@ function parseAgentUsage(raw) {
     }
 }
 
+// The serial the compositor itself reports for one output name.
+//
+// Hyprland publishes no EDID serial to Qt, so `screen.serialNumber` is always
+// empty there and a configured serial can never be contradicted from the screen
+// list. Hyprland does report the real serial through its own IPC, so this reads
+// it from the same command the packaged shell's identity gate uses.
+//
+// Returns null when the output is absent or publishes no serial, so the caller
+// can tell "different serial" from "no serial available" and treat them
+// differently.
+function parseMonitorSerial(raw, outputName) {
+    var list = parseJsonArray(raw)
+    if (list === null)
+        return null
+    var wanted = String(outputName === null || outputName === undefined ? "" : outputName)
+    for (var index = 0; index < list.length; index += 1) {
+        var entry = list[index]
+        if (entry === null || entry === undefined)
+            continue
+        if (String(entry.name || "") !== wanted)
+            continue
+        var serial = String(entry.serial === undefined || entry.serial === null ? "" : entry.serial)
+        return serial === "" ? null : serial
+    }
+    return null
+}
+
+// Whether a configured serial is satisfied by what the compositor reports.
+// Three states, deliberately distinct: true when the serials agree, false when
+// they are both present and differ, and null when the compositor supplied no
+// serial and so nothing can be verified.
+function serialVerdict(configuredSerial, reportedSerial) {
+    var configured = String(configuredSerial === null || configuredSerial === undefined ? "" : configuredSerial)
+    var reported = String(reportedSerial === null || reportedSerial === undefined ? "" : reportedSerial)
+    if (reported === "")
+        return null
+    if (configured === "")
+        return null
+    return configured === reported
+}
+
 // The CPU marketing name, exactly as /proc/cpuinfo publishes it.
 function parseCpuModel(raw) {
     var match = String(raw || "").match(/^model name\s*:\s*(.+)$/m)

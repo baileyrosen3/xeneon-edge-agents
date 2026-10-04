@@ -40,6 +40,7 @@ Item {
     required property var agentsUsage
     required property var clipboard
     required property var notifications
+    required property var compositorIdentity
 
     property bool reducedMotion: false
 
@@ -84,6 +85,7 @@ Item {
         agentsUsage: root.agentsUsage
         clipboard: root.clipboard
         notifications: root.notifications
+        compositorIdentity: root.compositorIdentity
 
         reducedMotion: root.reducedMotion
         showDate: root.settings.showDate

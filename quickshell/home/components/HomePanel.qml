@@ -74,6 +74,7 @@ PanelWindow {
         agentsUsage: root.context.agentsUsage
         clipboard: root.context.clipboard
         notifications: root.context.notifications
+        compositorIdentity: root.context.compositorIdentity
         reducedMotion: root.reducedMotion
     }
 }
