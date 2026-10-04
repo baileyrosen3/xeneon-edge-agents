@@ -1,17 +1,17 @@
-pragma ComponentBehavior: Bound
 import QtQuick
 import "."
 import "Design.js" as Design
 import "../state/SourceParse.js" as Parse
-import "StatMeter.qml"
+import "../state/ThemePalette.js" as ThemePalette
 
-// The right-hand hardware block: one device heading per source, each with its
-// load, temperature, and capacity meters.
+// The hardware block: one row group per device.
 //
-// Every source keeps its heading even when it reports unavailable, so the
-// block still names the machine's parts and says honestly that a reading is
-// missing. A source that vanished from the layout would read as "not present",
-// which is a different claim.
+// The reference lays these out as stacked rows rather than columns of meters,
+// with the measurement label in a small filled pill and the value right-aligned
+// in a lighter one, coloured by severity. That is what this renders.
+//
+// There is no card behind the group. Only the individual pills carry material,
+// because the wallpaper is the surface.
 Item {
     id: root
 
@@ -22,252 +22,197 @@ Item {
 
     property bool reducedMotion: false
 
-    GlassMaterial {
-        anchors.fill: parent
-        theme: root.theme
-        elevation: 1
-        corner: Design.radius.card
+    readonly property bool light: String(theme.mode) === "light"
+    // At the live 270px height the three device groups plus the memory capacity
+    // bar do not fit, so the least load-bearing measurement is dropped rather
+    // than letting the last row be clipped.
+    readonly property bool compact: height < 200
+    readonly property bool veryCompact: height < 240
+    readonly property int rowSpacing: compact ? 4 : 9
+    readonly property int groupSpacing: compact ? 7 : 13
+
+    // Severity is carried by the theme's own semantic roles, never by a literal.
+    // On the monochrome vantablack theme those roles are greys, so the ramp
+    // reads as weight and brightness rather than as hue — which is the correct
+    // behaviour for a theme that publishes no colour.
+    function severityColor(level) {
+        if (level === "crit")
+            return String(theme.error)
+        if (level === "warn")
+            return String(theme.needsHelp)
+        return String(theme.success)
     }
 
-    // The height each column actually has, and whether that is enough for a
-    // full meter set. Decided from geometry, so the last row is always inside
-    // the band on any surface height.
-    readonly property int rowBudget: columns.height
-    readonly property bool compact: rowBudget < 214
-    readonly property int rowSpacing: compact ? 4 : 9
+    readonly property color pillText: ThemePalette.ensureContrast(
+        String(theme.textPrimary), String(theme.canvas), 7)
 
-    Row {
-        id: columns
-        anchors.left: parent.left
+    Column {
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        anchors.margins: root.compact ? 10 : Design.metrics.gutterCompact
-        spacing: Design.metrics.columnGapCompact
+        width: Math.min(parent.width, 380)
+        spacing: root.groupSpacing
 
-        // CPU. The heading names the load and the package temperature; load is
-        // a delta, so the first sample after start-up legitimately reads as
-        // unavailable for one poll rather than as zero percent.
-        Item {
-            width: (columns.width - Design.metrics.columnGapCompact * 2) / 3
-            height: columns.height
+        // ---- CPU
+        Column {
+            width: parent.width
+            spacing: 2
 
-            Column {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                spacing: root.rowSpacing
+            DeviceHeading { width: parent.width; theme: root.theme; caption: root.cpuLabel }
 
-                // The device this column measures, named once.
-                Text {
-                    width: parent.width
-                    text: root.cpuLabel
-                    color: String(root.theme.textSecondary)
-                    font.family: Design.fontFamily
-                    font.pixelSize: Design.type.subheadline.size
-                    font.weight: Design.type.subheadline.weight
-                    font.letterSpacing: Design.type.subheadline.tracking
-                    elide: Text.ElideRight
-                }
-
-                StatMeter {
-                    width: parent.width
-                    theme: root.theme
-                    reducedMotion: root.reducedMotion
-                    kind: "load"
-                    compact: root.compact
-                    heading: "Load"
-                    percent: root.cpu.loadPercent
-                    // The load average is this meter's own subline. It is only
-                    // shown once a real delta exists, so a first sample shows
-                    // its real reason instead of a placeholder.
-                    capacityDetail: root.cpuLoadAverageLabel
-                }
-
-                StatMeter {
-                    width: parent.width
-                    theme: root.theme
-                    reducedMotion: root.reducedMotion
-                    kind: "temperature"
-                    compact: root.compact
-                    heading: "Package"
-                    celsius: root.cpu.celsius
-                }
+            StatRow {
+                width: parent.width
+                theme: root.theme
+                label: "Load"
+                value: root.cpuLabelPercent
+                level: root.cpuLevel
+            }
+            StatRow {
+                width: parent.width
+                theme: root.theme
+                visible: !root.veryCompact
+                label: "Pkg"
+                value: root.cpuTempLabel
+                level: root.cpuTempLevel
             }
         }
 
-        // GPU. NVML is deliberately not used, so an NVIDIA-only host renders an
-        // explicit unavailable reading instead of spawning a helper per sample.
-        Item {
-            width: (columns.width - Design.metrics.columnGapCompact * 2) / 3
-            height: columns.height
+        // ---- GPU
+        Column {
+            width: parent.width
+            spacing: 2
 
-            Column {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                spacing: root.rowSpacing
+            DeviceHeading { width: parent.width; theme: root.theme; caption: root.gpuLabel }
 
-                Text {
-                    width: parent.width
-                    text: root.gpuLabel
-                    color: String(root.theme.textSecondary)
-                    font.family: Design.fontFamily
-                    font.pixelSize: Design.type.subheadline.size
-                    font.weight: Design.type.subheadline.weight
-                    font.letterSpacing: Design.type.subheadline.tracking
-                    elide: Text.ElideRight
-                }
-
-                StatMeter {
-                    width: parent.width
-                    theme: root.theme
-                    reducedMotion: root.reducedMotion
-                    kind: "load"
-                    compact: root.compact
-                    heading: "Load"
-                    percent: root.gpu.busyPercent
-                }
-
-                StatMeter {
-                    width: parent.width
-                    theme: root.theme
-                    reducedMotion: root.reducedMotion
-                    kind: "temperature"
-                    compact: root.compact
-                    heading: "Core"
-                    celsius: root.gpu.celsius
-                }
-
-                StatMeter {
-                    width: parent.width
-                    theme: root.theme
-                    reducedMotion: root.reducedMotion
-                    kind: "capacity"
-                    compact: root.compact
-                    heading: "Video"
-                    percent: root.gpuVramPercent
-                    capacityLabel: root.gpuVramUsedLabel
-                    capacityDetail: root.gpuVramTotalLabel
-                }
+            StatRow {
+                width: parent.width
+                theme: root.theme
+                label: "Load"
+                value: root.gpuLabelPercent
+                level: root.gpuLevel
+            }
+            StatRow {
+                width: parent.width
+                theme: root.theme
+                label: "Temp"
+                value: root.gpuTempLabel
+                level: root.gpuTempLevel
+            }
+            StatRow {
+                width: parent.width
+                theme: root.theme
+                visible: !root.veryCompact
+                label: "VRAM"
+                value: root.gpuVramLabel
+                level: root.gpuVramLevel
             }
         }
 
-        // Memory. Capacity is rendered as used-of-total with the fraction as the
-        // meter's level, which is how a capacity figure reads in system UI.
-        Item {
-            width: (columns.width - Design.metrics.columnGapCompact * 2) / 3
-            height: columns.height
+        // ---- Memory
+        Column {
+            width: parent.width
+            spacing: 2
 
-            Column {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                spacing: root.rowSpacing
+            DeviceHeading { width: parent.width; theme: root.theme; caption: root.memoryLabel }
 
-                Text {
-                    width: parent.width
-                    text: root.memoryLabel
-                    color: String(root.theme.textSecondary)
-                    font.family: Design.fontFamily
-                    font.pixelSize: Design.type.subheadline.size
-                    font.weight: Design.type.subheadline.weight
-                    font.letterSpacing: Design.type.subheadline.tracking
-                    elide: Text.ElideRight
+            StatRow {
+                width: parent.width
+                theme: root.theme
+                label: "RAM"
+                value: root.memoryUsedLabel
+                level: root.memoryLevel
+            }
+
+            // A thin capacity bar, then the used/total right-aligned beneath it.
+            Rectangle {
+                width: parent.width
+                height: 3
+                radius: 1.5
+                color: Qt.alpha(String(root.theme.textMuted), 0.32)
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    height: parent.height
+                    width: root.memoryPercent >= 0
+                        ? Math.max(0, Math.min(parent.width, parent.width * root.memoryPercent / 100))
+                        : 0
+                    radius: 1.5
+                    color: root.severityColor(root.memoryLevel)
                 }
+            }
 
-                StatMeter {
-                    width: parent.width
-                    theme: root.theme
-                    reducedMotion: root.reducedMotion
-                    kind: "capacity"
-                    compact: root.compact
-                    heading: "In use"
-                    percent: root.memory.percent
-                    capacityLabel: root.memoryUsedLabel
-                    capacityDetail: root.memoryTotalLabel
-                }
-
-                StatMeter {
-                    width: parent.width
-                    theme: root.theme
-                    reducedMotion: root.reducedMotion
-                    kind: "capacity"
-                    compact: root.compact
-                    heading: "Swap"
-                    percent: root.swapPercent
-                    capacityLabel: root.swapUsedLabel
-                    capacityDetail: root.swapTotalLabel
-                }
+            Text {
+                width: parent.width
+                text: root.memoryTotalLabel
+                color: String(root.theme.textSecondary)
+                font.family: Design.fontFamily
+                font.pixelSize: Design.type.caption.size
+                font.weight: 400
+                horizontalAlignment: Text.AlignRight
             }
         }
     }
 
-    // Headings name what is actually installed. Each one prefers a real
-    // published name and falls back to a raw device label only when the machine
-    // publishes none; nothing is invented to fill the gap.
     readonly property string cpuLabel: root.cpu.modelLabel !== ""
         ? root.cpu.modelLabel
-        : root.cpu.chip !== ""
-            ? root.cpu.chip
-            : "CPU"
-
+        : root.cpu.chip !== "" ? root.cpu.chip : "CPU"
     readonly property string gpuLabel: root.gpu.name !== ""
         ? root.gpu.name
-        : root.gpu.chip !== ""
-            ? root.gpu.chip
-            : root.gpu.card !== ""
-                ? root.gpu.card
-                : "GPU"
-
-    // D3: the memory heading must not repeat the capacity it sits above. The
-    // installed capacity is already the value of the "In use" meter, so the
-    // heading stays a neutral, honest label.
+        : root.gpu.chip !== "" ? root.gpu.chip
+            : root.gpu.card !== "" ? root.gpu.card : "GPU"
     readonly property string memoryLabel: "Memory"
 
-    // The capacity reading. An unavailable memory source shows an em dash rather
-    // than a fabricated total.
-    readonly property string memoryUsedLabel: root.memory.available && root.memory.totalBytes > 0
-        ? Parse.formatBytes(root.memory.usedBytes)
-        : "—"
+    readonly property string cpuLabelPercent: root.cpu.loadPercent >= 0
+        ? Math.round(root.cpu.loadPercent) + "%" : "—"
+    readonly property string cpuTempLabel: root.cpu.celsius >= 0
+        ? Math.round(root.cpu.celsius) + "°" : "—"
+    readonly property string cpuLevel: root.cpu.loadPercent >= 0
+        ? severityFor(root.cpu.loadPercent) : "unknown"
 
-    readonly property string memoryTotalLabel: root.memory.available && root.memory.totalBytes > 0
-        ? "of " + Parse.formatBytes(root.memory.totalBytes)
-        : "unavailable"
+    readonly property real cpuTempLevel: root.cpu.celsius >= 0
+        ? severityFor(root.cpu.celsius, 100) : -1
+    readonly property string cpuTempSeverity: root.cpu.celsius >= 0
+        ? severityFor(root.cpu.celsius, 100) : "unknown"
 
-    readonly property real swapPercent: root.memory.available && root.memory.snapshot.swapTotalBytes > 0
-        ? root.memory.snapshot.swapUsedBytes * 100 / root.memory.snapshot.swapTotalBytes
-        : -1
+    readonly property string gpuLabelPercent: root.gpu.busyPercent >= 0
+        ? Math.round(root.gpu.busyPercent) + "%" : "—"
+    readonly property string gpuTempLabel: root.gpu.celsius >= 0
+        ? Math.round(root.gpu.celsius) + "°" : "—"
+    readonly property string gpuVramLabel: root.gpu.hasVram
+        ? Parse.formatBytes(root.gpu.vramUsedBytes) : "—"
 
-    readonly property string swapUsedLabel: root.swapPercent >= 0
-        ? Parse.formatBytes(root.memory.snapshot.swapUsedBytes)
-        : "—"
-
-    readonly property string swapTotalLabel: root.swapPercent >= 0
-        ? "of " + Parse.formatBytes(root.memory.snapshot.swapTotalBytes)
-        : "unavailable"
-
-    // The load average belongs to the load meter alone, formatted as
-    // "1m 1.68". It appears only once a real delta exists, because before that
-    // there is genuinely nothing to say.
-    readonly property string cpuLoadAverageLabel: root.cpu.loadPercent >= 0
-        && root.cpu.loadAverage !== ""
-        ? "1m " + root.cpu.loadAverage.split(/\s+/)[0]
-        : ""
-
-    // Video memory gets its own meter rather than riding on the load meter's
-    // subline, so every meter owns exactly one quantity.
-    readonly property bool hasVram: root.gpu.hasVram
+    readonly property string gpuLevel: root.gpu.busyPercent >= 0
+        ? severityFor(root.gpu.busyPercent) : "unknown"
+    readonly property string gpuTempLevel: root.gpu.celsius >= 0
+        ? severityFor(root.gpu.celsius, 100) : "unknown"
+    readonly property string gpuVramLevel: root.gpu.hasVram
+        ? severityFor(root.gpuVramPercent, 100) : "unknown"
 
     readonly property real gpuVramPercent: root.gpu.hasVram
         ? Math.max(0, Math.min(100, root.gpu.vramUsedBytes * 100 / root.gpu.vramTotalBytes))
         : -1
 
-    readonly property string gpuVramUsedLabel: root.gpu.hasVram
-        ? Parse.formatBytes(root.gpu.vramUsedBytes)
-        : "—"
+    readonly property string memoryUsedLabel: root.memory.available && root.memory.totalBytes > 0
+        ? Parse.formatBytes(root.memory.usedBytes) : "—"
+    readonly property string memoryTotalLabel: root.memory.available && root.memory.totalBytes > 0
+        ? Parse.formatBytes(root.memory.usedBytes) + " / "
+            + Parse.formatBytes(root.memory.totalBytes) : "unavailable"
+    readonly property real memoryPercent: root.memory.percent
+    readonly property string memoryLevel: root.memory.percent >= 0
+        ? severityFor(root.memory.percent) : "unknown"
 
-    readonly property string gpuVramTotalLabel: root.gpu.hasVram
-        ? "of " + Parse.formatBytes(root.gpu.vramTotalBytes)
-        : "unavailable"
+    // ok below 70, warn to 88, crit above. Mirrors the ramp the current widget
+    // uses, derived from the measurement rather than from a printed string.
+    function severityFor(percent, scale) {
+        var value = Number(percent)
+        if (!isFinite(value) || value < 0)
+            return "unknown"
+        var ceiling = scale === undefined ? 100 : scale
+        var fraction = Math.max(0, Math.min(1, value / ceiling))
+        if (fraction >= 0.9)
+            return "crit"
+        if (fraction >= 0.7)
+            return "warn"
+        return "ok"
+    }
 }

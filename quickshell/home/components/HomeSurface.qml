@@ -53,7 +53,8 @@ Item {
 
     // The dock's sizing, hoisted to the component root so a Repeater delegate
     // can qualify it. A delegate cannot reach an id declared on a nested Item.
-    readonly property int dockTileSize: Design.compactHeight(height) ? 52 : 62
+    readonly property int dockTileSize: Design.compactHeight(height) ? 48 : 54
+    readonly property int dockSpacing: 10
 
     ThemeBackdrop {
         anchors.fill: parent
@@ -115,43 +116,38 @@ Item {
         // tiles need, which is what pushed the last tile under the media card.
         // Sizing the zone to its content makes overlap structurally impossible:
         // the media card takes whatever is left.
-        readonly property int dockSpacing: Design.metrics.gutterCompact
-        readonly property real dockTileCount: root.dispatcher.dockApps.length
+
+        // Five across, two rows: every declared tile is shown, so the block is a
+        // fixed shape and nothing is dropped.
+        readonly property int dockTileCount: root.dispatcher && root.dispatcher.dockApps ? root.dispatcher.dockApps.length : 0
+        readonly property int dockCapacity: 5
         readonly property real dockWidth: Math.round(
             Math.min(
-                dockTileCount * root.dockTileSize + Math.max(0, dockTileCount - 1) * main.dockSpacing,
-                // Never let the dock claim more than a third of the surface.
+                5 * root.dockTileSize
+                    + 4 * root.dockSpacing,
                 Math.round(available * 0.34)
             )
         )
-
-        // How many tiles actually fit. Fewer tiles are shown rather than
-        // letting any of them be clipped or occluded.
-        readonly property int dockCapacity: Math.max(
-            1,
-            Math.floor((main.dockWidth + main.dockSpacing) / (root.dockTileSize + main.dockSpacing))
-        )
-        readonly property var dockAppsShown: root.dispatcher.dockApps.slice(0, dockCapacity)
+        readonly property var dockAppsShown: root.dispatcher && root.dispatcher.dockApps ? root.dispatcher.dockApps.slice(0, 5) : []
 
         readonly property real statsRatio: 0.30
         readonly property real statsWidth: Math.round(available * statsRatio)
         readonly property real mediaWidth: available - dockWidth - statsWidth
 
-        // Left: the app launcher cluster.
-        Row {
+        // Left: the launcher grid. Icons float directly on the wallpaper — no
+        // region card — in a tight two-row block, five per row.
+        Grid {
             id: cluster
 
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            height: parent.height
-            width: main.dockWidth
-            spacing: main.dockSpacing
+            columns: 5
+            spacing: root.dockSpacing
 
             Repeater {
                 model: main.dockAppsShown
 
                 delegate: DockIcon {
-                    id: dockTile
                     required property var modelData
 
                     theme: root.theme
@@ -163,9 +159,6 @@ Item {
                     role: modelData.role
                     reducedMotion: root.reducedMotion
                     plateSize: root.dockTileSize
-                    // Anchored to the cluster row rather than to `parent`,
-                    // which is the Repeater and has no geometry of its own.
-                    anchors.verticalCenter: cluster.verticalCenter
                 }
             }
         }
