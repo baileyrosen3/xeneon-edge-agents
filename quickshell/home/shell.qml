@@ -104,8 +104,13 @@ ShellRoot {
     // this surface is the one place where guessing wrong would put content on
     // the wrong display. `unverifiable` is surfaced in the log so the cause is
     // never silent.
+    // NOTE: this must read `screenMatches`, never `targetScreens`.
+    // `targetScreens` is derived from this property, so reading it here made
+    // the two mutually dependent: QML evaluated the cycle once as false and
+    // never recovered, so the surface was never created and — because the
+    // screen gate itself was satisfied — nothing was logged at all.
     readonly property bool serialGateOpen:
-        root.targetScreens.length === 1 && root.serialVerdict === true
+        root.screenMatches.length === 1 && root.serialVerdict === true
 
     // Exactly one match or nothing. Several matches are as unusable as none.
     readonly property var screenMatches: (function() {
@@ -120,6 +125,39 @@ ShellRoot {
     readonly property var targetScreens: root.serialGateOpen
         ? root.screenMatches
         : []
+
+    // Every refusal is named. A gate that fails closed silently is worse than
+    // no gate, because it is indistinguishable from an empty screen.
+    readonly property string refusalReason: root.refusalReasonFor()
+
+    function refusalReasonFor() {
+        if (root.previewMode)
+            return ""
+
+        var matches = root.screenMatches
+        if (matches.length === 0)
+            return "no screen matches output " + root.targetOutput
+                + " / model " + root.targetModel
+        if (matches.length > 1)
+            return matches.length + " screens match output " + root.targetOutput
+                + " / model " + root.targetModel
+
+        var source = compositorIdentity
+        if (source === null || source === undefined || !source.available)
+            return "unverifiable: the compositor serial has not been read yet for output "
+                + root.targetOutput
+        if (source.unverifiable)
+            return "unverifiable: the compositor reports no serial for output "
+                + root.targetOutput
+        if (source.contradicted)
+            return "serial mismatch: the compositor reports "
+                + source.reportedSerial + " for output " + root.targetOutput
+                + ", configured " + root.targetSerial
+        if (source.verified)
+            return ""
+
+        return "unverifiable: the compositor serial is in an unknown state"
+    }
 
     // The gate itself lives in ScreenIdentity.js so it can be executed and
     // tested offline. An unsatisfiable gate in this file rendered perfectly in
@@ -141,17 +179,38 @@ ShellRoot {
             Quickshell.screens,
             root.identity()
         )
-        var reason = ScreenIdentity.refusalReason(
-            Quickshell.screens,
-            root.identity()
-        )
-        if (reason !== "")
-            root.logIdentity("no surface: " + reason)
         return matches
     }
 
     function logIdentity(message) {
         console.warn("xeneon-home[identity] " + message)
+    }
+
+    // The gate is polled rather than signalled, so the reason is de-duplicated:
+    // a steady refusal is logged once, and a successful bind is logged too, so
+    // silence is never ambiguous.
+    property string lastReportedRefusal: "not yet evaluated"
+
+    property Timer refusalReport: Timer {
+        interval: 750
+        repeat: true
+        running: !root.previewMode
+        triggeredOnStart: true
+        onTriggered: root.reportRefusal()
+    }
+
+    function reportRefusal() {
+        if (root.previewMode)
+            return
+        var reason = root.refusalReason
+        if (reason === root.lastReportedRefusal)
+            return
+        root.lastReportedRefusal = reason
+        if (reason === "")
+            logIdentity("surface bound: output " + root.targetOutput
+                + " model " + root.targetModel + " serial verified")
+        else
+            logIdentity("no surface: " + reason)
     }
 
     // ----------------------------------------------------------------- state
