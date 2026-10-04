@@ -56,6 +56,26 @@ def run_parse_js(script: str):
     return json.loads(result.stdout.strip())
 
 
+def run_parse_js(script: str):
+    """Runs a snippet with SourceParse.js loaded as `Parse`."""
+    prelude = (
+        'const fs = require("fs");\n'
+        'const src = fs.readFileSync(process.argv[1], "utf8")'
+        '  .replace(/^\\.pragma library\\n/, "");\n'
+        'const mod = {exports: {}};\n'
+        'new Function("module", "exports",'
+        ' src + "\\nmodule.exports={parseMonitorSerial,serialVerdict};")(mod, mod.exports);\n'
+        'const Parse = mod.exports;\n'
+    )
+    result = subprocess.run(
+        ["node", "-e", prelude + script, str(STATE / "SourceParse.js")],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr.strip())
+    return json.loads(result.stdout.strip())
+
+
 def run_js(script: str):
     prelude = (
         'const fs = require("fs");\n'
@@ -294,6 +314,65 @@ class ForeignArrayTests(unittest.TestCase):
             [],
             "the old implementation unexpectedly matched a foreign list",
         )
+
+
+@unittest.skipUnless(node_available(), "node is not available")
+class CompositorSerialTests(unittest.TestCase):
+    """The configured serial must gate something even when Qt publishes none.
+
+    Every screen fixture has `serialNumber: ""`, which is what Hyprland really
+    produces. Under that shape the screen gate cannot contradict a wrong
+    configured serial, so the compositor's own report is the only thing that can.
+    """
+
+    # The helper takes the raw command output, which is a JSON *string*, exactly
+    # as the probe hands it over.
+    MONITORS = json.dumps(
+        [{"name": "DP-1", "serial": "101NTDVMF874"},
+         {"name": "DP-3", "serial": "035926215698"}]
+    )
+
+    def reported(self, output="DP-3"):
+        return run_parse_js(
+            "console.log(JSON.stringify(Parse.parseMonitorSerial(%s, %s)));"
+            % (json.dumps(self.MONITORS), json.dumps(output))
+        )
+
+    def verdict(self, configured, reported):
+        return run_parse_js(
+            "console.log(JSON.stringify(Parse.serialVerdict(%s, %s)));"
+            % (json.dumps(configured), json.dumps(reported))
+        )
+
+    def test_compositor_reports_the_real_serial_for_the_edge(self):
+        self.assertEqual(self.reported(), "035926215698")
+
+    def test_a_wrong_configured_serial_is_contradicted(self):
+        self.assertIs(self.verdict("000000000000", self.reported()), False)
+
+    def test_the_correct_configured_serial_agrees(self):
+        self.assertIs(self.verdict("035926215698", self.reported()), True)
+
+    def test_absent_serial_is_a_third_state_not_agreement(self):
+        self.assertIsNone(self.verdict("035926215698", ""))
+        self.assertIsNone(self.verdict("035926215698", None))
+
+    def test_an_absent_output_reports_no_serial(self):
+        self.assertIsNone(self.reported(output="DP-9"))
+
+    def test_the_screen_gate_alone_cannot_refuse_a_wrong_serial(self):
+        """Proves the compositor check is what closes the hole."""
+        matched = run_js(
+            "const s = %s;\n"
+            "console.log(JSON.stringify("
+            "  S.screenMatches(s, {output:'DP-3',model:'XENEON EDGE',serial:'000000000000'})"
+            "  ? true : false));\n" % json.dumps(EDGE)
+        )
+        self.assertTrue(
+            matched,
+            "the screen gate unexpectedly refused an empty-serial screen",
+        )
+        self.assertIs(self.verdict("000000000000", self.reported()), False)
 
 
 @unittest.skipUnless(node_available(), "node is not available")

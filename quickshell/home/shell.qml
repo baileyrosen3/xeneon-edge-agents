@@ -79,7 +79,8 @@ ShellRoot {
     readonly property string targetOutput:
         String(Quickshell.env("XENEON_HOME_OUTPUT") || "")
 
-    readonly property var matchingScreens: screensMatchingIdentity()
+    // Preview never consults screen identity, and must not log a refusal for it.
+    readonly property var matchingScreens: root.previewMode ? [] : screensMatchingIdentity()
 
     // The three-state serial verdict: true agrees, false contradicts, null
     // unverifiable. Before the first sample lands it is null, which must never
@@ -305,7 +306,7 @@ ShellRoot {
         implicitHeight: root.previewSize.height
         minimumSize: Qt.size(640, 180)
         color: homeTheme.canvas
-        surfaceFormat.opaque: true
+        surfaceFormat.opaque: false
 
         onClosed: {
             root.previewClosing = true

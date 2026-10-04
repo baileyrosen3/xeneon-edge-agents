@@ -252,14 +252,32 @@ Notes on two deliberate absences:
   label because SMBIOS publishes no module identity on this class of machine and
   the installed capacity is already shown as the reading itself.
 
-### About the wallpaper
+### The wallpaper
 
-Omarchy themes do publish a wallpaper at `<themeRoot>/background`. This theme's
-is a regular dot field, and rendered as anything sharper than a faint smudge it
-reads as a repeating rule pattern — exactly the structural noise the backdrop
-must not carry. It is therefore **not used**; the field is a pure palette
-gradient. `XENEON_HOME_WALLPAPER` exists for a host whose wallpaper is a real
-image, and is still subject to heavy de-emphasis and a vignette.
+The panel shows the user's real Omarchy background.
+
+`~/.local/state/omarchy/current/background` is a **symlink**, and the path is
+bound rather than resolved: `omarchy theme set` deletes and recreates the whole
+`current/theme` tree and repoints that symlink, so a cached `readlink -f` result
+would point into a tree that no longer exists. A `FileView` watches the symlink
+purely for change and re-binds the image on reload; the source is emptied for one
+frame so the engine cannot serve its cached decode.
+
+The panel surface is **non-opaque**, so the desktop's own
+`omarchy-background` layer shows through. `ThemeBackdrop` *also* draws the image
+itself as a safety net: if that layer is disabled, the panel must not fall back
+to black while a valid background exists. The palette field is drawn only when no
+usable image resolved, so it can never cover a wallpaper that did load.
+
+Video is never handed to `Image`. The extensions the wallpaper plugin itself
+treats as video — `.mp4`, `.mkv`, `.webm`, `.mov`, `.m4v` — are routed to the
+palette field instead, so a video wallpaper degrades cleanly rather than leaving
+a broken-image placeholder.
+
+Legibility over an arbitrary photograph is handled by a two-layer scrim: a broad
+even darkening plus a heavier band across the top where the status text sits,
+both derived from the theme. Verified against a deliberately hostile near-white
+(250,250,252) image, where the clock, pills and meters remain legible.
 
 ## The action allowlist
 
