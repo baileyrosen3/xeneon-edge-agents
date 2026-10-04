@@ -61,11 +61,34 @@ function screenMatches(screen, identity) {
     return true
 }
 
+// Normalises a screen list without assuming it is a real JavaScript Array.
+//
+// `Quickshell.screens` is a *foreign* array: on this Qt/Quickshell build it has
+// a numeric `length` and indexed properties, but `Array.isArray` returns false
+// and its constructor is not Array. Gating on `Array.isArray` therefore
+// collapsed every real screen list to empty and the surface could never bind,
+// while a unit test built on a literal `[]` passed all the same.
+//
+// The only property this function relies on is a finite, non-negative `length`.
+// That is present on a plain array, on a foreign array, and on any other
+// indexable sequence, so all four input shapes behave identically.
+function screenList(screens) {
+    if (screens === null || screens === undefined)
+        return []
+    var length = Number(screens.length)
+    if (!isFinite(length) || length < 0)
+        return []
+    var list = []
+    for (var index = 0; index < Math.floor(length); index += 1)
+        list.push(screens[index])
+    return list
+}
+
 // The screens that satisfy the identity.
 function matchingScreens(screens, identity) {
     if (!identityConfigured(identity))
         return []
-    var list = Array.isArray(screens) ? screens : []
+    var list = screenList(screens)
     var matches = []
     for (var index = 0; index < list.length; index += 1) {
         if (screenMatches(list[index], identity))

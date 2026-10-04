@@ -40,7 +40,7 @@ def run_js(script: str):
         '  .replace(/^\\.pragma library\\n/, "");\n'
         'const mod = {exports: {}};\n'
         'const names = "identityConfigured,screenMatches,matchingScreens,'
-        'targetScreen,refusalReason";\n'
+        'targetScreen,refusalReason,screenList";\n'
         'new Function("module", "exports", src + "\\nmodule.exports={" + names + "};")'
         '(mod, mod.exports);\n'
         'const S = mod.exports;\n'
@@ -178,6 +178,101 @@ class ScreenIdentityTests(unittest.TestCase):
         self.assertIsNone(found)
 
 
+# The shape `Quickshell.screens` really has on this build: indexed and with a
+# numeric `length`, but not a JavaScript Array.
+FOREIGN_ARRAY_SETUP = """
+function makeForeign(list) {
+    const holder = {length: list.length};
+    for (let i = 0; i < list.length; i++) holder[i] = list[i];
+    return holder;
+}
+const FA = makeForeign(%s);
+const IS_FOREIGN = Array.isArray(FA) === false && FA.constructor.name !== "Array";
+"""
+
+
+@unittest.skipUnless(node_available(), "node is not available")
+class ForeignArrayTests(unittest.TestCase):
+    """The list normaliser must not require a real JavaScript Array.
+
+    A unit test built on a literal `[]` can never reproduce this defect, so
+    every case here runs against an object shaped the way Qt exposes
+    `Quickshell.screens`.
+    """
+
+    def run_with(self, prelude: str, script: str):
+        return run_js(prelude + script)
+
+    def test_the_fixture_really_is_not_a_javascript_array(self):
+        # Guards the guard: if this ever stops being foreign, the tests below
+        # would stop testing anything.
+        out = run_js(
+            FOREIGN_ARRAY_SETUP % json.dumps([EDGE])
+            + "console.log(JSON.stringify([IS_FOREIGN, FA.length, FA[0].name]));"
+        )
+        self.assertEqual(out, [True, 1, "DP-3"])
+
+    def test_foreign_screen_list_still_matches_the_edge(self):
+        out = run_js(
+            FOREIGN_ARRAY_SETUP % json.dumps([LG, EDGE, HDMI])
+            + "console.log(JSON.stringify(S.targetScreen(FA, %s)));" % json.dumps(IDENTITY)
+        )
+        self.assertEqual(out, EDGE)
+
+    def test_foreign_screen_list_refuses_on_ambiguity(self):
+        out = run_js(
+            FOREIGN_ARRAY_SETUP % json.dumps([EDGE, dict(EDGE)])
+            + "console.log(JSON.stringify(S.targetScreen(FA, %s)));" % json.dumps(IDENTITY)
+        )
+        self.assertIsNone(out)
+
+    def test_screen_list_normalises_all_four_shapes_identically(self):
+        foreign, plain, nullish, missing = run_js(
+            FOREIGN_ARRAY_SETUP % json.dumps([EDGE, LG])
+            + "const PLAIN = %s;\n" % json.dumps([EDGE, LG])
+            + "console.log(JSON.stringify(["
+            "  S.screenList(FA),"
+            "  S.screenList(PLAIN),"
+            "  S.screenList(null),"
+            "  S.screenList(undefined)"
+            "]));"
+        )
+        self.assertEqual(foreign, plain)
+        self.assertEqual(nullish, [])
+        self.assertEqual(missing, [])
+        self.assertEqual(foreign, [EDGE, LG])
+
+    def test_screen_list_rejects_values_with_no_usable_length(self):
+        script = (
+            "console.log(JSON.stringify(["
+            "S.screenList({}),"
+            "S.screenList({length: -1}),"
+            "S.screenList({length: 'nope'})"
+            "]));"
+        )
+        self.assertEqual(run_js(script), [[], [], []])
+
+    def test_the_previous_isarray_implementation_fails_on_a_foreign_list(self):
+        # The old implementation, verbatim, run against the real shape.
+        script = (
+            FOREIGN_ARRAY_SETUP % json.dumps([EDGE])
+            + "function oldMatching(screens, identity) {\n"
+            "  if (!S.identityConfigured(identity)) return [];\n"
+            "  var list = Array.isArray(screens) ? screens : [];\n"
+            "  var matches = [];\n"
+            "  for (var i = 0; i < list.length; i++)\n"
+            "    if (S.screenMatches(list[i], identity)) matches.push(list[i]);\n"
+            "  return matches;\n"
+            "}\n"
+            "console.log(JSON.stringify(oldMatching(FA, %s)));" % json.dumps(IDENTITY)
+        )
+        self.assertEqual(
+            run_js(script),
+            [],
+            "the old implementation unexpectedly matched a foreign list",
+        )
+
+
 @unittest.skipUnless(node_available(), "node is not available")
 class OldPredicateRegressionTests(unittest.TestCase):
     """Proves the fix was necessary: the previous predicate fails these."""
@@ -231,6 +326,15 @@ class ScreenIdentitySourceTests(unittest.TestCase):
         self.assertIn("XENEON_HOME_OUTPUT", shell)
         helper = (STATE / "ScreenIdentity.js").read_text(encoding="utf-8")
         self.assertIn('String(record.serial || "") !== ""', helper)
+
+    def test_the_gate_never_gates_on_a_javascript_array_type(self):
+        """`Quickshell.screens` is a foreign array. Any isArray/instanceof check
+        on a Quickshell-exposed list silently collapses it to empty."""
+        gate = (STATE / "ScreenIdentity.js").read_text(encoding="utf-8")
+        body = gate[gate.index("function screenList"):]
+        self.assertNotIn("Array.isArray", body)
+        self.assertNotIn("instanceof Array", body)
+        self.assertNotIn(".constructor", gate)
 
     def test_no_primary_or_first_screen_fallback_in_source(self):
         shell = (HOME / "shell.qml").read_text(encoding="utf-8")
