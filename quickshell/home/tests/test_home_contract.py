@@ -375,6 +375,52 @@ class HomeVisualSeparationContractTests(unittest.TestCase):
             self.assertIn(app, declared)
 
 
+class HomeAsyncSourceContractTests(unittest.TestCase):
+    """A source that has not published yet must yield an idle state.
+
+    On the live panel the source context is injected *after* the panel item is
+    constructed, so every source is briefly absent. Dereferencing one threw a
+    TypeError on the first frame of every start.
+    """
+
+    def test_media_card_tolerates_an_absent_source(self):
+        card = source("components/NowPlayingCard.qml")
+        # The source is optional, and every field goes through one guard.
+        self.assertIn("property var media: null", card)
+        self.assertIn("readonly property var source:", card)
+        self.assertIn("function mediaValue(field)", card)
+        # No raw dereference of the source may survive.
+        self.assertNotRegex(card, r"root\.media\.[a-zA-Z]")
+
+    def test_the_idle_state_is_explicit(self):
+        card = source("components/NowPlayingCard.qml")
+        # Nothing playing means no position and no length, not an accidental
+        # undefined read.
+        self.assertIn("readonly property double lengthSeconds", card)
+        self.assertIn("readonly property double positionSeconds", card)
+        self.assertIn("readonly property real progress", card)
+        self.assertIn('root.available', card)
+
+    def test_the_live_panel_context_is_never_null(self):
+        # A null context makes every source read in the tree throw on frame one.
+        panel = source("components/HomePanel.qml")
+        self.assertIn("property var context: ({})", panel)
+        self.assertNotIn("property var context: null", panel)
+
+    def test_every_source_exposes_available_before_any_field(self):
+        # `available` is what every consumer reads first, so it must exist even
+        # before the first sample publishes.
+        for path in sorted((HOME / "state").glob("*Source.qml")):
+            if path.name == "SourceBase.qml":
+                continue
+            text = path.read_text(encoding="utf-8")
+            self.assertIn(
+                "readonly property bool available",
+                text,
+                "%s must expose available" % path.name,
+            )
+
+
 class HomeLayoutContractTests(unittest.TestCase):
     """The strip must respect the touch panel's geometry and safe areas."""
 
