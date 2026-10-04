@@ -89,12 +89,37 @@ quickshell --no-duplicate --path "$(pwd)/quickshell/home"
 matching screen all create *no surface at all* and log the reason. There is no
 fallback to the primary display, and no code path can reach one.
 
+### How the identity gate behaves per compositor
+
+All three components are always required, and the output name and model must
+match **exactly**. The serial rule is asymmetric, deliberately:
+
+| Compositor | `serialNumber` published? | Behaviour |
+| --- | --- | --- |
+| **Hyprland** | No — Qt reports `""` for *every* screen | The serial cannot be compared, so the gate falls back to exact output **and** model matching. |
+| A compositor that exposes EDID serials | Yes | The serial is compared **exactly**; a mismatch refuses the screen. |
+
+This asymmetry is required, not a weakening. Hyprland's `wl_output` does not
+expose an EDID serial to Qt, so demanding a non-empty runtime serial makes the
+gate unsatisfiable there and the surface can never bind — which is precisely
+the bug that let an unbindable config render flawlessly in preview.
+
+Only properties Qt actually publishes on Hyprland are read: `name`, `model`,
+`serialNumber`, `width`, `height`. `manufacturer`, `description`,
+`logicalWidth`/`logicalHeight`, `scale`, and `virtual` are all undefined there
+and are never touched.
+
+The gate lives in `state/ScreenIdentity.js` as a pure function and is executed
+by `tests/test_screen_identity.py`, because a rule that only runs inside a
+Quickshell process cannot be verified offline — which is how this one shipped
+broken.
+
 ### Environment
 
 | Variable | Meaning |
 | --- | --- |
 | `XENEON_HOME_PREVIEW=1` | Preview mode: a `FloatingWindow`, no live surface. |
-| `XENEON_HOME_PREVIEW_SIZE=<WxH>` | Preview size, validated and bounded to 640–3840 × 180–720. Default `1280x360`. |
+| `XENEON_HOME_PREVIEW_SIZE=<WxH>` | Preview size, validated and bounded to 640–3840 × 180–720. Default `1280x360`. Verified at **`960x270`** (the live EDGE logical size), `1024x288`, and `1280x360`. |
 | `XENEON_HOME_SHOT=<path>` | With preview, write a PNG and exit. |
 | `XENEON_HOME_REDUCED_MOTION=1` | Disables every animation, in preview **and** on the live surface. Honoured per-`Behavior` by each animated component. |
 | `XENEON_HOME_SETTINGS_PATH=<path>` | Preference file location. |
